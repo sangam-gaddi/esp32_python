@@ -1,1 +1,48 @@
-﻿build/
+# ESP-IDF build output
+build/
+
+# Generated from sdkconfig.defaults, which is the tracked source of truth.
+sdkconfig
+sdkconfig.old
+dependencies.lock
+managed_components/
+
+# ---------------------------------------------------------------------------
+# SECRETS -- never commit any of these
+# ---------------------------------------------------------------------------
+
+# Ed25519 signing key and the Ascon OTA encryption key.
+# keys/README.md is tracked; nothing else in keys/ is.
+keys/*
+!keys/README.md
+
+# Generated device trust anchors: contains the demonstration encryption key.
+# Track crypto_config.h.example instead.
+main/crypto_config.h
+
+# Local device/network configuration (Wi-Fi credentials, server address).
+main/device_config.h
+
+# TLS material for the development HTTPS server.
+server/certs/*
+!server/certs/README.md
+
+# ---------------------------------------------------------------------------
+# Build artefacts and generated packages
+# ---------------------------------------------------------------------------
+server/packages/*.sota
+server/firmware/*.bin
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

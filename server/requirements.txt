@@ -1,0 +1,12 @@
+# Host-side dependencies for the OTA server and the packaging tools.
+#
+#   pip install -r server/requirements.txt
+#
+# Ascon-Hash256 and Ascon-AEAD128 are implemented in sotalib/ascon.py with no
+# dependencies at all, so nothing here provides the lightweight cryptography --
+# only Ed25519 (via OpenSSL), the web server, and the test runner.
+
+Flask>=3.0,<4.0          # OTA metadata + package server
+cryptography>=42.0       # Ed25519 signing/verification, dev TLS certificates
+requests>=2.31           # used by the integration tests
+pytest>=8.0              # host test suite

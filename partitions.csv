@@ -1,0 +1,34 @@
+# Partition table for Secure OTA -- ESP32, 4 MB flash.
+#
+# Three application slots so OTA always writes somewhere that is not running:
+#
+#   factory   the image flashed over USB (idf.py flash). Never overwritten by OTA.
+#   ota_0     first OTA target
+#   ota_1     second OTA target
+#
+# esp_ota_get_next_update_partition() alternates between ota_0 and ota_1, so the
+# running image is never the one being written. otadata records which slot the
+# bootloader should start; it is only updated after every cryptographic check has
+# passed, so a failed or interrupted update simply leaves the previous image
+# selected and the device keeps booting it.
+#
+# 1.25 MB per app slot: enough for Wi-Fi + mbedTLS + TLS + the Ascon/Ed25519
+# code with room to spare. Sizes and offsets must stay 64 KB-aligned for app
+# partitions.
+#
+#   0x008000  partition table
+#   0x009000  nvs        20 KB   device state: keys, accepted versions
+#   0x00e000  otadata     8 KB   which slot boots
+#   0x010000  phy_init    4 KB
+#   0x020000  factory   1.25 MB
+#   0x160000  ota_0     1.25 MB
+#   0x2a0000  ota_1     1.25 MB
+#   0x3e0000  (128 KB unused, spare)
+#
+# Name,     Type, SubType, Offset,   Size,     Flags
+nvs,        data, nvs,     0x9000,   0x5000,
+otadata,    data, ota,     0xe000,   0x2000,
+phy_init,   data, phy,     0x10000,  0x1000,
+factory,    app,  factory, 0x20000,  0x140000,
+ota_0,      app,  ota_0,   0x160000, 0x140000,
+ota_1,      app,  ota_1,   0x2a0000, 0x140000,
