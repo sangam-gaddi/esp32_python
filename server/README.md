@@ -31,6 +31,33 @@ signature under a key this machine has never held.
 `tests/test_server.py::test_server_module_holds_no_key_material` asserts that
 `app.py` does not even reference a key-loading function.
 
+One qualification, added with the dashboard: `server/dashboard/packaging.py` runs
+`tools/create_ota_package.py` in a subprocess when someone clicks **Create Secure
+OTA Package**, and that tool reads `keys/` on the machine it runs on. The *serving*
+path still holds no keys, and no API ever returns key material
+(`tests/test_dashboard.py` asserts that too). If you want the strict separation,
+run the dashboard on the build host and let a separate machine serve
+`server/packages/`.
+
+---
+
+## The management dashboard
+
+`python server/app.py` also serves the Secure OTA Control Center:
+
+| Page | Path |
+| --- | --- |
+| Overview: device status, telemetry, live OTA progress, pipeline | `/dashboard` |
+| Firmware: upload, package, publish | `/firmware` |
+| OTA history | `/history` |
+| Security monitor + attack test lab | `/security` |
+| Live logs (SSE) | `/logs` |
+
+It registers as a Flask blueprint at import time and is wrapped in a `try`, so a
+broken dashboard cannot stop the server from answering devices. Its state lives
+in `server/ota.db` (SQLite); deleting that file resets the dashboard's history
+and nothing else. Full details in [`../docs/DASHBOARD.md`](../docs/DASHBOARD.md).
+
 ---
 
 ## Endpoints
@@ -71,7 +98,9 @@ device fetch a package that is then rejected.
 ## Publishing a package
 
 Drop it in `server/packages/`. The directory is rescanned on every request, so no
-restart is needed.
+restart is needed. (The dashboard's **Publish update** button does exactly this:
+it copies the signed bytes from `server/staging/` into `server/packages/`,
+unchanged.)
 
 ```bash
 python tools/create_ota_package.py --firmware build/secure_ota.bin \

@@ -85,6 +85,23 @@ ota_state_t ota_manager_state(void);
  * Useful for a demonstration and for the benchmark harness. */
 void ota_manager_get_stats(uint32_t *cycles, uint32_t *rejections);
 
+/* Bytes of the package received so far, and the total the signed header
+ * declares. Both are 0 outside a download. Reporting only, for the dashboard:
+ * no security decision reads these. */
+void ota_manager_get_progress(uint32_t *done, uint32_t *total);
+
+/* Version of the package the current or most recent cycle was working on,
+ * encoded as major<<16|minor<<8|patch, plus its security version. Zero when no
+ * package has been offered yet. Read from the package header for display; it is
+ * only trustworthy once the signature check has passed, which is why an
+ * installed-version report is only ever emitted after every check succeeds. */
+void ota_manager_get_target(uint32_t *firmware_version,
+                            uint32_t *security_version);
+
+/* The last rejection or failure message, or "" if the device has not rejected
+ * anything since boot. */
+const char *ota_manager_last_error(void);
+
 #ifdef __cplusplus
 }
 #endif

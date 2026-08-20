@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}OTA History &middot; Secure OTA Control Center{% endblock %}
+{% block heading %}OTA HISTORY{% endblock %}
+{% block subheading %}Every update attempt reported by a device, and every check the server answered{% endblock %}
+
+{% block content %}
+
+<div class="grid stats" style="margin-bottom:18px;">
+  <div class="card"><div class="stat-label">Total events</div>
+    <div class="stat-value" id="h-total">&mdash;</div></div>
+  <div class="card"><div class="stat-label">Successful updates</div>
+    <div class="stat-value" id="h-ok" style="color:var(--ok)">&mdash;</div></div>
+  <div class="card"><div class="stat-label">Rejected updates</div>
+    <div class="stat-value" id="h-rej" style="color:var(--alert)">&mdash;</div></div>
+  <div class="card"><div class="stat-label">Update checks</div>
+    <div class="stat-value" id="h-checks">&mdash;</div></div>
+</div>
+
+<div class="card pad-0">
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Date / time</th><th>Device</th><th>Event</th><th>Stage</th>
+            <th>Version</th><th>Security</th><th>Result</th><th>Reason</th>
+            <th>Duration</th></tr>
+      </thead>
+      <tbody id="hist-body">
+        <tr><td colspan="9" class="empty">Loading&hellip;</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="hint" style="margin-top:12px;">
+  Stored in <span class="mono">server/ota.db</span> (SQLite). Rows come from the
+  device's own reports and from the existing OTA endpoints being used &mdash;
+  nothing here is synthesised.
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('dashboard.static', filename='js/history.js') }}"></script>
+{% endblock %}

@@ -103,6 +103,38 @@
 #endif
 
 /* =========================================================================
+ * DASHBOARD REPORTING
+ *
+ * Telemetry only. The device tells the management dashboard what it is doing
+ * and picks up at most one of three commands (CHECK_UPDATE, START_OTA, REBOOT).
+ * Nothing here can influence how an update is verified: see device_report.h.
+ * ========================================================================= */
+
+/* How often a heartbeat is sent while the device is idle. The server treats a
+ * device as OFFLINE after ~15 s without one, so keep this comfortably below
+ * that (and raise SOTA_HEARTBEAT_TIMEOUT on the server if you raise this). */
+#ifndef DEVICE_REPORT_INTERVAL_MS
+#define DEVICE_REPORT_INTERVAL_MS 5000
+#endif
+
+/* Faster cadence while an OTA cycle is running, so the dashboard's progress
+ * bar follows the real download. */
+#ifndef DEVICE_REPORT_BUSY_INTERVAL_MS
+#define DEVICE_REPORT_BUSY_INTERVAL_MS 1500
+#endif
+
+/* How often the reporting task wakes to check its queue. */
+#ifndef DEVICE_REPORT_TICK_MS
+#define DEVICE_REPORT_TICK_MS 500
+#endif
+
+/* Per-request timeout for heartbeats and event reports. Short: if the
+ * dashboard is not running, the device should notice quickly and carry on. */
+#ifndef DEVICE_REPORT_TIMEOUT_MS
+#define DEVICE_REPORT_TIMEOUT_MS 4000
+#endif
+
+/* =========================================================================
  * WI-FI BEHAVIOUR
  * ========================================================================= */
 

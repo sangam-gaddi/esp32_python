@@ -13,6 +13,13 @@ Total time: about 25 minutes for the full script, or 5 minutes for
 [the host-only version](#part-0-host-only-demonstration-no-hardware) if you have
 no board.
 
+**Presenting to someone?** Run the same script with
+<http://localhost:8000/dashboard> on screen. The Secure OTA Control Center shows
+the device, the versions, the verification pipeline and the live progress of each
+step described below, and its Security Test Lab runs the attack tools in §5 at the
+click of a button. It changes nothing about how the update works — see
+[`DASHBOARD.md`](DASHBOARD.md).
+
 ---
 
 ## What you need

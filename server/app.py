@@ -28,6 +28,12 @@ Endpoints:
     GET /api/firmware/list                metadata for every package
     GET /api/firmware/<version>/package   download a specific package
     GET /api/firmware/latest/package      download the newest package
+
+The management dashboard (server/dashboard/) registers itself on this app at
+import time and adds its own routes under /dashboard, /firmware, /history,
+/security, /logs and /api/... . It does not touch the endpoints above, which are
+the ones the ESP32 uses. If the dashboard fails to load for any reason the OTA
+server still starts and still serves devices.
 """
 
 from __future__ import annotations
@@ -59,6 +65,20 @@ log = logging.getLogger("ota-server")
 
 # Silence Flask's per-request line; the handlers log something more useful.
 logging.getLogger("werkzeug").setLevel(logging.WARNING)
+
+# ------------------------------------------------------------------ dashboard
+#
+# The management layer is optional and additive. It is wrapped so that a missing
+# dependency or a broken dashboard module can never stop the OTA server from
+# serving devices -- the device-facing routes below are the ones that matter.
+DASHBOARD_ENABLED = False
+try:
+    from server import dashboard as _dashboard  # noqa: E402
+
+    _dashboard.register(app)
+    DASHBOARD_ENABLED = True
+except Exception as _exc:  # pragma: no cover - defensive
+    log.warning("dashboard not available (%s); OTA endpoints unaffected", _exc)
 
 
 # --------------------------------------------------------------------------- scan
@@ -253,6 +273,11 @@ def index():
         f"<li><code>{b['file']}</code>: {b['reason']}</li>" for b in invalid)
     bad_block = (f"<h2>Rejected files</h2><ul>{bad}</ul>" if bad else "")
 
+    dash_link = ('<p class="dash"><a href="/dashboard">Open the Secure OTA '
+                 'Control Center &rarr;</a> &mdash; device status, firmware '
+                 'management, OTA control, security monitor and live logs.</p>'
+                 if DASHBOARD_ENABLED else "")
+
     return f"""<!doctype html>
 <title>Secure OTA update server</title>
 <style>
@@ -264,8 +289,10 @@ def index():
   code {{ font-size: .85rem; }}
   .warn {{ background: #fff4e5; border-left: 4px solid #e8a33d; padding: .8rem; }}
   .note {{ color: #555; font-size: .9rem; }}
+  .dash {{ background: #eef6ff; border-left: 4px solid #3b82f6; padding: .8rem; }}
 </style>
 <h1>Secure OTA update server</h1>
+{dash_link}
 {banner}
 <p class="note">This server holds no cryptographic keys. Packages are signed and
 encrypted on the build host; the server only stores and serves the bytes.</p>
@@ -343,6 +370,10 @@ def main() -> int:
         log.warning("      --output server/packages/firmware_v2.0.0.sota")
 
     log.info("listening on       : %s://%s:%d", scheme, args.host, port)
+    if DASHBOARD_ENABLED:
+        log.info("dashboard          : %s://localhost:%d/dashboard", scheme, port)
+    else:
+        log.warning("dashboard          : NOT LOADED (see the warning above)")
     if not args.https:
         log.warning("transport          : plain HTTP -- DEVELOPMENT ONLY, not secure")
         log.warning("                     package-level crypto is still fully enforced")

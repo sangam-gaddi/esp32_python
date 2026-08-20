@@ -98,6 +98,29 @@ const uint8_t *device_keys_trusted_pubkey(void) {
   return OTA_TRUSTED_ED25519_PUBLIC_KEY;
 }
 
+/*
+ * The two accessors below hand out the same fingerprints device_keys_log_status()
+ * already prints. A fingerprint is Ascon-Hash256 of the key, truncated: it lets
+ * the dashboard show that host and device hold matching key material without
+ * either end ever transmitting a key. No function here returns key bytes.
+ */
+void device_keys_signer_fingerprint(char *out, size_t outlen) {
+  if (out == NULL || outlen == 0) return;
+  fingerprint(OTA_TRUSTED_ED25519_PUBLIC_KEY,
+              sizeof OTA_TRUSTED_ED25519_PUBLIC_KEY, out, outlen);
+}
+
+void device_keys_ota_key_fingerprint(char *out, size_t outlen) {
+  if (out == NULL || outlen == 0) return;
+  uint8_t key[ASCON_AEAD128_KEY_BYTES];
+  if (device_keys_get_ota_key(key) != ESP_OK) {
+    snprintf(out, outlen, "unavailable");
+    return;
+  }
+  fingerprint(key, sizeof key, out, outlen);
+  ascon_wipe(key, sizeof key);
+}
+
 void device_keys_log_status(void) {
   char fp[17];
 

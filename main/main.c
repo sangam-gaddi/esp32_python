@@ -21,6 +21,7 @@
 
 #include "app_config.h"
 #include "device_keys.h"
+#include "device_report.h"
 #include "esp_app_desc.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
@@ -129,6 +130,14 @@ void app_main(void) {
 
   /* ---- OTA ------------------------------------------------------------- */
   ESP_ERROR_CHECK(ota_manager_start());
+
+  /* ---- dashboard reporting --------------------------------------------- *
+   * Telemetry out, three possible commands in. If the dashboard is not
+   * running this task simply fails to connect and retries; the OTA path does
+   * not depend on it in any way. */
+  if (device_report_start() != ESP_OK)
+    ESP_LOGW(TAG, "Reporting task did not start; the dashboard will show this "
+                  "device as OFFLINE");
 
   /* ---- idle loop: a heartbeat so the demo log shows the device is alive - */
   uint32_t ticks = 0;

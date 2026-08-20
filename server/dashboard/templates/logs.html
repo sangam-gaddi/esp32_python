@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Live Logs &middot; Secure OTA Control Center{% endblock %}
+{% block heading %}LIVE LOGS{% endblock %}
+{% block subheading %}Server activity and everything the ESP32 reports, streamed over Server-Sent Events{% endblock %}
+
+{% block content %}
+
+<div class="card" style="margin-bottom:16px;">
+  <div class="card-head">
+    <div class="card-title">Filter</div>
+    <span class="card-hint" id="log-status">connecting&hellip;</span>
+  </div>
+  <div class="btn-row">
+    <button class="btn sm primary" data-filter="ALL">All</button>
+    <button class="btn sm" data-filter="SERVER">Server</button>
+    <button class="btn sm" data-filter="DEVICE">Device</button>
+    <button class="btn sm" data-filter="PKG">Packaging</button>
+    <button class="btn sm" data-filter="LAB">Test lab</button>
+    <button class="btn sm ghost" id="btn-clear">Clear view</button>
+    <label class="chip" style="cursor:pointer">
+      <input type="checkbox" id="auto-scroll" checked style="width:auto"> autoscroll
+    </label>
+  </div>
+</div>
+
+<div class="card pad-0" style="padding:14px;">
+  <div class="terminal" id="term" style="height:60vh;"></div>
+</div>
+
+<div class="hint" style="margin-top:12px;">
+  The buffer holds the most recent 1000 lines in memory. Serial output from the
+  ESP32 is not captured here &mdash; what appears is what the device reports over
+  HTTP plus the OTA server's own log.
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('dashboard.static', filename='js/logs.js') }}"></script>
+{% endblock %}

@@ -33,6 +33,14 @@ server/certs/*
 server/packages/*.sota
 server/firmware/*.bin
 
+# Dashboard state: the SQLite record of heartbeats/events, packages that have
+# been built but not published, and firmware images uploaded through the UI.
+server/ota.db
+server/ota.db-wal
+server/ota.db-shm
+server/staging/
+server/firmware/uploads/
+
 # Python
 __pycache__/
 *.py[cod]

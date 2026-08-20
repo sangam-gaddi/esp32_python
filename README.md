@@ -224,6 +224,25 @@ python server/app.py --https --port 8443    # HTTPS, needs tools/make_dev_certs.
 The JSON metadata is **untrusted** — a hint so the device can skip a needless
 download. Every value that matters is re-read from the signed package header.
 
+### The management dashboard
+
+The same process also serves the **Secure OTA Control Center** at
+<http://localhost:8000/dashboard> — device status and telemetry, firmware
+upload/packaging/publishing, OTA control, live update progress, OTA history, a
+security-event monitor with an attack test lab, and a live log viewer.
+
+```
+/dashboard   overview      /firmware   releases and packaging
+/history     OTA history   /security   crypto status + Security Test Lab
+/logs        live logs
+```
+
+It is an additive management layer: the endpoints above are unchanged, the
+dashboard performs no cryptography of its own, and a package is never modified
+after signing. The device side is one extra task (`main/device_report.c`) that
+sends telemetry and collects at most three commands — `CHECK_UPDATE`,
+`START_OTA`, `REBOOT`. See [`docs/DASHBOARD.md`](docs/DASHBOARD.md).
+
 For HTTPS:
 
 ```bash
@@ -242,7 +261,7 @@ See [`server/README.md`](server/README.md).
 ## 8. Tests
 
 ```bash
-# Python: cryptography, format, signatures, attacks, server            (130 tests)
+# Python: cryptography, format, signatures, attacks, server, dashboard (165 tests)
 python -m pytest tests/ -v
 
 # C: the same sources the firmware links, compiled and run on this machine
@@ -356,6 +375,7 @@ correctly and proves it against official vectors. It is not audited, and it is n
 | [`docs/PACKAGE_FORMAT.md`](docs/PACKAGE_FORMAT.md) | normative `.sota` wire format, byte by byte |
 | [`docs/SECURITY.md`](docs/SECURITY.md) | threat model, what is and is not defended, honest limitations |
 | [`docs/DEMO.md`](docs/DEMO.md) | step-by-step demonstration, successful update and five attacks |
+| [`docs/DASHBOARD.md`](docs/DASHBOARD.md) | the Secure OTA Control Center: pages, device protocol, command allowlist, key handling |
 | [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) | measured static sizes; runtime harness with figures left blank |
 | [`components/ed25519/README.md`](components/ed25519/README.md) | TweetNaCl provenance and verification hashes |
 | [`keys/README.md`](keys/README.md) | which key belongs where |
@@ -406,6 +426,7 @@ components/ota_package/ package parsing + verification    (no ESP-IDF deps)
 sotalib/                host implementation of the same primitives and format
 tools/                  key generation, packaging, verification, tampering, certs
 server/                 Flask OTA server (holds no keys)
+server/dashboard/       management dashboard: pages, APIs, SQLite record
 tests/                  Python suites, C host suites, official KAT vectors
 docs/                   audit, architecture, format, security, demo, benchmarks
 partitions.csv          factory + ota_0 + ota_1 + otadata

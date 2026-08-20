@@ -12,10 +12,12 @@ idf_component_register(
          "ota_manager.c"
          "wifi_manager.c"
          "device_keys.c"
+         "device_report.c"
          "version_manager.c"
     INCLUDE_DIRS "."
     REQUIRES ascon ed25519 ota_package
              nvs_flash esp_wifi esp_netif esp_event
              esp_http_client app_update json esp_timer
+             esp_hw_support spi_flash
     EMBED_TXTFILES "server_ca_cert.pem"
 )

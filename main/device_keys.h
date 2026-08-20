@@ -23,6 +23,7 @@
 #ifndef DEVICE_KEYS_H_
 #define DEVICE_KEYS_H_
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include "ascon_aead128.h"
@@ -46,6 +47,12 @@ const uint8_t *device_keys_trusted_pubkey(void);
 
 /* Log where the keys came from, plus non-sensitive fingerprints. */
 void device_keys_log_status(void);
+
+/* Non-sensitive identifiers: Ascon-Hash256 of a key, truncated to 16 hex
+ * characters. Safe to report to the dashboard -- they identify a key without
+ * revealing anything about it. `outlen` should be at least 17. */
+void device_keys_signer_fingerprint(char *out, size_t outlen);
+void device_keys_ota_key_fingerprint(char *out, size_t outlen);
 
 #ifdef __cplusplus
 }

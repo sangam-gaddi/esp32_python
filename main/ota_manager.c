@@ -8,6 +8,7 @@
 #include "ascon_word.h"
 #include "cJSON.h"
 #include "device_keys.h"
+#include "device_report.h"
 #include "esp_app_format.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
@@ -33,6 +34,18 @@ static volatile ota_state_t s_state = OTA_IDLE;
 static SemaphoreHandle_t s_trigger;
 static uint32_t s_cycles;
 static uint32_t s_rejections;
+
+/*
+ * Reporting-only state, published to the dashboard through the accessors at the
+ * bottom of this file. Nothing below reads these to make a decision; they exist
+ * so a human can watch the update happen.
+ */
+static volatile uint32_t s_progress_done;
+static volatile uint32_t s_progress_total;
+static uint32_t s_target_version;
+static uint32_t s_target_security;
+static char s_target_version_str[16] = "";
+static char s_last_error[160] = "";
 
 /* Metadata from the server's JSON hint. Untrusted -- see the header comment. */
 typedef struct {
@@ -69,7 +82,13 @@ static void reject(const char *stage, const char *reason) {
   s_rejections++;
   ESP_LOGE(TAG, "%s", reason);
   ESP_LOGE(TAG, "UPDATE REJECTED at %s -- running firmware is unchanged", stage);
+  snprintf(s_last_error, sizeof s_last_error, "%s: %s", stage, reason);
   set_state(OTA_FAILED);
+
+  /* Tell the dashboard why. Queued, never blocking: see device_report.h. */
+  device_report_ota_event("REJECT", stage, "REJECTED", reason,
+                          FIRMWARE_VERSION_STRING, s_target_version_str,
+                          s_target_security, 0);
 }
 
 static bool url_is_https(const char *url) {
@@ -215,6 +234,8 @@ done:
 
 static void run_update_cycle(void) {
   s_cycles++;
+  s_progress_done = 0;
+  s_progress_total = 0;
 
   uint8_t key[ASCON_AEAD128_KEY_BYTES];
   uint8_t *inbuf = NULL;
@@ -255,6 +276,10 @@ static void run_update_cycle(void) {
   }
   ESP_LOGI(TAG, "Update available: version %s",
            ota_pkg_version_str(hint.firmware_version, vbuf, sizeof vbuf));
+  device_report_ota_event("START", "CHECK", "STARTED",
+                          "server offered a newer package",
+                          FIRMWARE_VERSION_STRING, vbuf,
+                          hint.security_version, 0);
 
   /* ---- OTA_METADATA: fetch and parse the signed header ----------------- */
   set_state(OTA_METADATA);
@@ -299,6 +324,15 @@ static void run_update_cycle(void) {
     reject("METADATA", ota_pkg_strerror(rc));
     goto cleanup;
   }
+
+  /* Display-only bookkeeping for the dashboard. These fields are not trusted
+   * yet -- the signature check is the next stage -- and nothing below reads
+   * them to decide anything. */
+  s_target_version = hdr.firmware_version;
+  s_target_security = hdr.security_version;
+  ota_pkg_version_str(hdr.firmware_version, s_target_version_str,
+                      sizeof s_target_version_str);
+  s_progress_total = hdr.ciphertext_size;
 
   ESP_LOGI(TAG, "Package header parsed:");
   ESP_LOGI(TAG, "  firmware version  %s",
@@ -441,6 +475,7 @@ static void run_update_cycle(void) {
       goto cleanup;
     }
     received += (uint32_t)n;
+    s_progress_done = received; /* reporting only */
 
     if (produced) {
       err = esp_ota_write(ota, outbuf, produced);
@@ -542,6 +577,15 @@ static void run_update_cycle(void) {
            ota_pkg_version_str(hdr.firmware_version, vbuf, sizeof vbuf),
            (unsigned)hdr.security_version, target->label);
 
+  /* Every check has passed by this point: signature, anti-rollback, AEAD tag
+   * and hash. Only now is the version in the header something worth reporting
+   * as installed. */
+  s_last_error[0] = '\0';
+  device_report_ota_event("INSTALL", "INSTALL", "SUCCESS", target->label,
+                          FIRMWARE_VERSION_STRING, vbuf,
+                          hdr.security_version,
+                          (uint32_t)((esp_timer_get_time() - t_start) / 1000));
+
   /* ---- OTA_REBOOT ---------------------------------------------------- */
   set_state(OTA_REBOOT);
   ESP_LOGI(TAG, "Rebooting in %d ms...", OTA_REBOOT_DELAY_MS);
@@ -572,6 +616,8 @@ cleanup:
     ESP_LOGI(TAG, "Device continues running firmware %s",
              FIRMWARE_VERSION_STRING);
   }
+  s_progress_done = 0;
+  s_progress_total = 0;
   set_state(OTA_IDLE);
 }
 
@@ -628,3 +674,16 @@ void ota_manager_get_stats(uint32_t *cycles, uint32_t *rejections) {
   if (cycles) *cycles = s_cycles;
   if (rejections) *rejections = s_rejections;
 }
+
+void ota_manager_get_progress(uint32_t *done, uint32_t *total) {
+  if (done) *done = s_progress_done;
+  if (total) *total = s_progress_total;
+}
+
+void ota_manager_get_target(uint32_t *firmware_version,
+                            uint32_t *security_version) {
+  if (firmware_version) *firmware_version = s_target_version;
+  if (security_version) *security_version = s_target_security;
+}
+
+const char *ota_manager_last_error(void) { return s_last_error; }

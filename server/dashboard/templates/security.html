@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Security &middot; Secure OTA Control Center{% endblock %}
+{% block heading %}SECURITY MONITOR{% endblock %}
+{% block subheading %}Cryptographic posture, recorded security events, and the attack test lab{% endblock %}
+
+{% block content %}
+
+<div class="grid cols-2" style="margin-bottom:18px;">
+  <div class="card">
+    <div class="card-head"><div class="card-title">Cryptography Status</div></div>
+    <div class="event-list" id="c-body"></div>
+    <div class="hint" style="margin-top:12px;">
+      Status only. Key material is never read, stored or displayed by the
+      dashboard. Fingerprints, where shown, are Ascon-Hash256 digests the
+      firmware already prints at boot.
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <div class="card-title">Protection Summary</div>
+      <span class="card-hint">from lab runs and device reports</span>
+    </div>
+    <div id="prot-body"></div>
+  </div>
+</div>
+
+<div class="section-title">Security Test Lab</div>
+<div class="banner" style="margin-bottom:14px;">
+  <span style="font-size:18px">&#129514;</span>
+  <div>
+    Each test builds a hostile package with
+    <span class="mono">tools/tamper_package.py</span> and runs
+    <span class="mono">tools/verify_package.py</span> against it, in a scratch
+    directory. Hostile packages are never published and never offered to a
+    device.
+    <div class="muted" style="margin-top:4px;">
+      <b>PROTECTED</b> means the attack was detected and the update rejected.
+      <b>VULNERABLE</b> would mean a tampered package was accepted &mdash; that
+      must never happen.
+    </div>
+  </div>
+</div>
+
+<div class="btn-row" style="margin-bottom:14px;">
+  <button class="btn primary" id="btn-run-all">Run all tests</button>
+  <span class="pill" id="lab-keys">&mdash;</span>
+</div>
+
+<div class="lab-grid" id="lab-grid"></div>
+
+<div class="section-title">Security Events</div>
+<div class="card pad-0">
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Time</th><th>Severity</th><th>Kind</th><th>Event</th>
+                 <th>Detail</th><th>Source</th></tr></thead>
+      <tbody id="ev-body">
+        <tr><td colspan="6" class="empty">Loading&hellip;</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('dashboard.static', filename='js/security.js') }}"></script>
+{% endblock %}
