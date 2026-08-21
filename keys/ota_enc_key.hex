@@ -1,0 +1,4 @@
+# Ascon-AEAD128 OTA encryption key, 128 bits, hex.
+# Shared secret: the packaging tool encrypts with it, the device
+# decrypts with it. DEMONSTRATION KEY -- do not reuse in production.
+391a54f43679d3083e90544915271b2d
