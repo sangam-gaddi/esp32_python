@@ -391,6 +391,77 @@ def test_version_mismatch_is_reported_not_hidden(dash):
     assert "VERSION_MISMATCH" in kinds
 
 
+def test_reinstall_loop_is_detected(dash):
+    """The failure that hides from the mismatch check.
+
+    Observed on hardware: a package labelled 2.0.0 containing an older build.
+    The device installs it, reboots into an image that does not report at all,
+    sees 2.0.0 offered again, and loops. No heartbeat ever arrives after the
+    install, so only the device-facing endpoints show it is still alive.
+    """
+    c = dash["client"]
+    beat(c)
+    c.post("/api/device/esp32-test-01/event", json={
+        "event": "INSTALL", "stage": "INSTALL", "result": "SUCCESS",
+        "from_version": "1.0.0", "to_version": "2.0.0", "security_version": 2})
+
+    # the device keeps pulling the same package; no BOOT is ever reported
+    for _ in range(3):
+        dash["db"].add_ota_event(device_id="", event="DOWNLOAD",
+                                 stage="DOWNLOAD", to_version="2.0.0",
+                                 result="STARTED")
+
+    summary = c.get("/api/dashboard/summary").get_json()
+    loop = summary["reinstall_loop"]
+    assert loop is not None
+    assert loop["version"] == "2.0.0"
+    assert loop["downloads_since_install"] == 3
+
+    kinds = [e["kind"] for e in c.get("/api/security/events").get_json()["events"]]
+    assert "STALE_PACKAGE" in kinds
+
+    # and it is recorded once, not once per poll
+    for _ in range(3):
+        c.get("/api/dashboard/summary")
+    kinds = [e["kind"] for e in c.get("/api/security/events").get_json()["events"]]
+    assert kinds.count("STALE_PACKAGE") == 1
+
+
+def test_reinstall_loop_clears_once_the_device_boots_the_new_image(dash):
+    c = dash["client"]
+    beat(c, uptime_s=300)
+    c.post("/api/device/esp32-test-01/event", json={
+        "event": "INSTALL", "stage": "INSTALL", "result": "SUCCESS",
+        "from_version": "1.0.0", "to_version": "2.0.0", "security_version": 2})
+    for _ in range(3):
+        dash["db"].add_ota_event(device_id="", event="DOWNLOAD",
+                                 stage="DOWNLOAD", to_version="2.0.0",
+                                 result="STARTED")
+    assert c.get("/api/dashboard/summary").get_json()["reinstall_loop"]
+
+    # the device reboots into the new version and reports it
+    beat(c, uptime_s=5, firmware_version="2.0.0",
+         firmware_version_code=0x020000, security_version=2)
+    assert c.get("/api/dashboard/summary").get_json()["reinstall_loop"] is None
+
+
+def test_offline_device_still_using_the_ota_endpoints_is_reported(dash):
+    """OFFLINE means 'not reporting', which is not the same as 'not alive'."""
+    c = dash["client"]
+    dash["add_package"]("2.0.0", 2)
+    beat(c)
+    dash["db"]._exec("UPDATE devices SET last_seen = ? WHERE device_id = ?",
+                     (time.time() - 3600, "esp32-test-01"))
+
+    summary = c.get("/api/dashboard/summary").get_json()
+    assert summary["device"]["status"] == "OFFLINE"
+    assert summary["device_http_activity"] is None
+
+    c.get("/api/firmware/latest?device=esp32-test-01")
+    summary = c.get("/api/dashboard/summary").get_json()
+    assert summary["device_http_activity"]["requests"] >= 1
+
+
 def test_no_mismatch_when_the_versions_agree(dash):
     c = dash["client"]
     beat(c, uptime_s=300)

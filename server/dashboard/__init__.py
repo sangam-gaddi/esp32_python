@@ -185,6 +185,92 @@ def _version_mismatch(device: dict | None) -> dict | None:
     }
 
 
+def _reinstall_loop() -> dict | None:
+    """Detect a device reinstalling a version it has already installed.
+
+    This is the failure that hides from _version_mismatch(). That check compares
+    an install against the next heartbeat -- but if the image inside the package
+    is an *older build*, the device that boots it may not report at all, so no
+    heartbeat ever arrives and the mismatch is never noticed. The device is not
+    dead; it is looping, and the only evidence is on the device-facing endpoints:
+    it keeps downloading the same version it supposedly just installed.
+
+    So the rule is: a successful install of version V, no BOOT event since, and
+    two or more downloads of V afterwards. That combination has one cause -- the
+    packaged .bin does not identify itself as V.
+    """
+    rows = db.query(
+        "SELECT * FROM ota_events WHERE event = 'INSTALL' AND result = 'SUCCESS' "
+        "ORDER BY ts DESC LIMIT 1")
+    if not rows:
+        return None
+    ev = rows[0]
+    version = ev.get("to_version")
+    if not version or not ev.get("ts"):
+        return None
+
+    booted = db.query_one(
+        "SELECT COUNT(*) AS n FROM ota_events WHERE event = 'BOOT' AND ts > ?",
+        (ev["ts"],))
+    if booted and booted["n"]:
+        return None  # the device came back and reported; nothing to warn about
+
+    again = db.query_one(
+        "SELECT COUNT(*) AS n, MAX(ts) AS last FROM ota_events WHERE "
+        "event = 'DOWNLOAD' AND to_version = ? AND ts > ?", (version, ev["ts"]))
+    if not again or again["n"] < 2:
+        return None
+
+    detail = (
+        f"The device installed {version} at "
+        f"{time.strftime('%H:%M:%S', time.localtime(ev['ts']))} and has "
+        f"downloaded {version} {again['n']} more times since, without ever "
+        f"reporting that it booted it. The package is cryptographically valid "
+        f"-- the .bin inside it simply is not build {version}. The device "
+        f"installs it, reboots, still reports its old version, sees "
+        f"{version} offered again, and repeats. Fix: rebuild after setting "
+        f"FIRMWARE_VERSION_* / SECURITY_VERSION in main/app_config.h, then "
+        f"package that build/secure_ota.bin.")
+
+    # Record it once per install, not once per poll.
+    seen = db.query_one(
+        "SELECT COUNT(*) AS n FROM security_events WHERE kind = 'STALE_PACKAGE' "
+        "AND ts > ?", (ev["ts"],))
+    if not seen or not seen["n"]:
+        db.add_security_event(
+            "warn", "STALE_PACKAGE",
+            f"Device is reinstalling {version} repeatedly -- the packaged image "
+            f"is not build {version}", detail, ev.get("device_id") or "", "server")
+        logbus.push("SERVER", "WARNING",
+                    f"stale package: {version} has been installed and "
+                    f"re-downloaded {again['n']} times without a boot report")
+
+    return {
+        "version": version,
+        "downloads_since_install": again["n"],
+        "installed_at": ev["ts"],
+        "last_download": again["last"],
+        "device_id": ev.get("device_id"),
+        "explanation": detail,
+    }
+
+
+def _recent_device_http(window_s: int = 120) -> dict | None:
+    """Has *something* used the device-facing OTA endpoints recently?
+
+    A device shown as OFFLINE may still be perfectly alive -- running an image
+    that predates the reporting task, for instance. The OTA endpoints see that
+    traffic even when no heartbeat arrives, and saying so is a good deal more
+    useful than a bare OFFLINE.
+    """
+    row = db.query_one(
+        "SELECT COUNT(*) AS n, MAX(ts) AS last FROM ota_events WHERE "
+        "event IN ('CHECK', 'DOWNLOAD') AND ts > ?", (time.time() - window_s,))
+    if not row or not row["n"]:
+        return None
+    return {"requests": row["n"], "last": row["last"], "window_s": window_s}
+
+
 def _crypto_status(device: dict | None) -> list[dict]:
     """Status only. Key material is never read, stored or displayed here.
 
@@ -435,6 +521,8 @@ def summary():
                                    status),
         "crypto": _crypto_status(device_row),
         "version_mismatch": _version_mismatch(device),
+        "reinstall_loop": _reinstall_loop(),
+        "device_http_activity": _recent_device_http(),
         "history": db.list_ota_events(8),
         "security_events": db.list_security_events(8),
         "commands": db.list_commands(device["device_id"] if device else None, 8),

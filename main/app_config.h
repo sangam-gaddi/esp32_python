@@ -28,10 +28,10 @@
  * strictly greater than this.
  */
 #ifndef FIRMWARE_VERSION_MAJOR
-#define FIRMWARE_VERSION_MAJOR 1
+#define FIRMWARE_VERSION_MAJOR 2
 #endif
 #ifndef FIRMWARE_VERSION_MINOR
-#define FIRMWARE_VERSION_MINOR 0
+#define FIRMWARE_VERSION_MINOR 1
 #endif
 #ifndef FIRMWARE_VERSION_PATCH
 #define FIRMWARE_VERSION_PATCH 0
@@ -47,7 +47,7 @@
  * Equal values are allowed, so routine releases need not touch this.
  */
 #ifndef SECURITY_VERSION
-#define SECURITY_VERSION 1
+#define SECURITY_VERSION 2
 #endif
 
 #define FIRMWARE_VERSION_CODE                                     \

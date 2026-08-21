@@ -244,6 +244,17 @@ function renderAlerts(data) {
     </div>`);
   }
 
+  if (data.reinstall_loop) {
+    const r = data.reinstall_loop;
+    items.push(`<div class="banner warn">
+      <span style="font-size:18px">&#8635;</span>
+      <div><b>STALE PACKAGE &mdash; DEVICE IS REINSTALLING ${SOTA.esc(r.version)}</b>
+      Installed once, then downloaded ${r.downloads_since_install} more times
+      with no boot report in between.
+      <div class="muted" style="margin-top:6px;">${SOTA.esc(r.explanation)}</div></div>
+    </div>`);
+  }
+
   const dev = data.device;
   if (dev && dev.status === 'REBOOTING') {
     items.push(`<div class="banner warn">
@@ -253,12 +264,21 @@ function renderAlerts(data) {
       ${SOTA.ago(dev.seconds_since_heartbeat)}. This is expected right after an
       install.</div></div>`);
   } else if (dev && dev.status === 'OFFLINE') {
+    const http = data.device_http_activity;
+    const alive = http
+      ? `<div class="muted" style="margin-top:6px;">But the OTA endpoints have
+         served ${http.requests} request(s) in the last
+         ${Math.round(http.window_s / 60)} minute(s), most recently
+         ${SOTA.time(http.last)} &mdash; so a device <b>is</b> alive and checking
+         for updates. It is running an image without the reporting task, which is
+         what an older build looks like.</div>`
+      : '';
     items.push(`<div class="banner alert">
       <span style="font-size:18px">&#9679;</span>
       <div><b>ESP32 OFFLINE</b>
       Last seen ${SOTA.ago(dev.seconds_since_heartbeat)} at
       ${SOTA.val(dev.ip)}. Telemetry below is the last reported state, not live.
-      </div></div>`);
+      ${alive}</div></div>`);
   }
 
   if (data.server.invalid_packages) {
