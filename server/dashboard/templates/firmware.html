@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}Firmware &middot; Secure OTA Control Center{% endblock %}
+{% block heading %}FIRMWARE MANAGEMENT{% endblock %}
+{% block subheading %}Upload an image, build a signed &amp; encrypted .sota package, publish it to the OTA server{% endblock %}
+
+{% block content %}
+
+<div class="grid cols-2" style="margin-bottom:18px;">
+
+  <div class="card">
+    <div class="card-head">
+      <div class="card-title">1 &middot; Upload Firmware</div>
+      <span class="card-hint">plaintext ESP32 application image (.bin)</span>
+    </div>
+    <form id="upload-form">
+      <label class="field">
+        <span>Firmware image</span>
+        <input type="file" id="bin-file" accept=".bin" required>
+      </label>
+      <button class="btn primary" type="submit" id="btn-upload">Upload .bin</button>
+    </form>
+    <div class="hint" style="margin-top:12px;">
+      Uploaded to <span class="mono">server/firmware/uploads/</span>. Nothing
+      cryptographic happens on upload &mdash; the image is not yet a package.
+    </div>
+    <div id="upload-result" style="margin-top:12px;"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <div class="card-title">2 &middot; Create Secure OTA Package</div>
+      <span class="pill" id="keys-pill">&mdash;</span>
+    </div>
+    <form id="pkg-form">
+      <label class="field">
+        <span>Uploaded image</span>
+        <select id="pkg-source"></select>
+      </label>
+      <div class="grid cols-2" style="gap:14px;">
+        <label class="field">
+          <span>Firmware version</span>
+          <input type="text" id="pkg-version" placeholder="2.1.0" required>
+        </label>
+        <label class="field">
+          <span>Security version</span>
+          <input type="number" id="pkg-security" min="0" value="1" required>
+        </label>
+      </div>
+      <button class="btn primary" type="submit" id="btn-package">
+        Create Secure OTA Package
+      </button>
+    </form>
+    <div id="pkg-stages" style="margin-top:16px;"></div>
+    <div class="hint" style="margin-top:12px;">
+      Runs <span class="mono">tools/create_ota_package.py</span> on this machine.
+      The Ed25519 private key and the Ascon key stay in
+      <span class="mono">keys/</span> &mdash; the browser never receives them.
+    </div>
+  </div>
+</div>
+
+<div class="section-title">Firmware Releases</div>
+<div class="card pad-0">
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Package</th><th>Version</th><th>Security</th><th>Firmware</th>
+          <th>Package</th><th>Built</th><th>Ascon-Hash256</th><th>Status</th><th></th>
+        </tr>
+      </thead>
+      <tbody id="rel-body">
+        <tr><td colspan="9" class="empty">Loading&hellip;</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="section-title">Uploaded Images</div>
+<div class="card pad-0">
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>File</th><th>Size</th><th>Uploaded</th></tr></thead>
+      <tbody id="up-body">
+        <tr><td colspan="3" class="empty">Loading&hellip;</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('dashboard.static', filename='js/firmware.js') }}"></script>
+{% endblock %}

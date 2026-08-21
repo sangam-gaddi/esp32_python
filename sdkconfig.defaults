@@ -1,0 +1,70 @@
+# Project configuration for Secure OTA.
+#
+# This file is the authoritative, tracked configuration. `sdkconfig` itself is
+# generated from it and is git-ignored -- the baseline repository committed a
+# generated sdkconfig, which meant the project's real settings (2 MB flash, a
+# single-app partition table with no OTA slots at all) were invisible and easy to
+# clobber. Delete `sdkconfig` and re-run `idf.py build` to regenerate from here.
+#
+# Change settings with `idf.py menuconfig`, then move anything worth keeping into
+# this file.
+
+CONFIG_IDF_TARGET="esp32"
+
+# --- flash and partitions --------------------------------------------------
+# 4 MB is what an ESP32-WROOM-32 / DevKitC carries. Three 1.25 MB app slots do
+# not fit in 2 MB, which was the previous (default) setting.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
+
+# --- OTA safety ------------------------------------------------------------
+# With rollback enabled, a newly installed image boots in "pending verify" state
+# and the bootloader reverts to the previous slot unless the new firmware calls
+# esp_ota_mark_app_valid_cancel_rollback(). main.c calls it only after Wi-Fi is
+# up, so an image that cannot connect cannot brick the device.
+# This is a software mechanism: it burns no eFuses and is fully reversible.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# CONFIG_BOOTLOADER_APP_ANTI_ROLLBACK is deliberately NOT enabled. It gives
+# hardware-backed anti-rollback via a monotonic secure-version eFuse, but eFuse
+# writes are irreversible and would permanently limit which images the chip can
+# ever run. The project enforces anti-rollback in software instead (see
+# main/version_manager.c). docs/SECURITY.md explains the trade-off and how to
+# turn it on deliberately.
+
+# --- stack and memory ------------------------------------------------------
+# The OTA task owns TLS + HTTP + Ascon + Ed25519. 3584 bytes (the previous
+# setting) is not enough once mbedTLS is in the call chain.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# Verification plus a TLS handshake can hold the CPU for a while; give the task
+# watchdog room rather than tripping it mid-update.
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=30
+
+# --- code size -------------------------------------------------------------
+# -Os rather than -Og: three app slots and mbedTLS make size the binding
+# constraint, and this is not a project that needs single-step debugging.
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+
+# --- TLS -------------------------------------------------------------------
+CONFIG_ESP_HTTP_CLIENT_ENABLE_HTTPS=y
+CONFIG_MBEDTLS_SSL_PROTO_TLS1_3=y
+
+# The device pins one certificate -- the development CA in
+# main/server_ca_cert.pem -- rather than trusting ~200 public roots, which is
+# both correct for a private server and ~64 KB smaller.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=n
+
+# Smaller TLS record buffers: the OTA server sends bulk data over HTTP-level
+# chunks, not giant TLS records.
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=8192
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=2048
+
+# --- logging ---------------------------------------------------------------
+# INFO keeps the demonstration serial log readable. The OTA state machine logs
+# at INFO and errors at ERROR.
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y

@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% block title %}Overview &middot; Secure OTA Control Center{% endblock %}
+
+{% block content %}
+
+<div id="alert-zone" class="grid" style="gap:12px; margin-bottom:18px;"></div>
+
+<div class="grid stats" style="margin-bottom:18px;">
+  <div class="card">
+    <div class="stat-label">ESP32 Device</div>
+    <div class="stat-value" id="s-device-status">&mdash;</div>
+    <div class="stat-sub" id="s-device-sub">waiting for a heartbeat</div>
+  </div>
+  <div class="card">
+    <div class="stat-label">Running Firmware</div>
+    <div class="stat-value" id="s-firmware">&mdash;</div>
+    <div class="stat-sub" id="s-firmware-sub">security version &mdash;</div>
+  </div>
+  <div class="card">
+    <div class="stat-label">Latest Published</div>
+    <div class="stat-value" id="s-latest">&mdash;</div>
+    <div class="stat-sub" id="s-latest-sub">no package published</div>
+  </div>
+  <div class="card">
+    <div class="stat-label">Security Posture</div>
+    <div class="stat-value" id="s-security">&mdash;</div>
+    <div class="stat-sub" id="s-security-sub">signature &middot; AEAD &middot; hash &middot; rollback</div>
+  </div>
+</div>
+
+<div class="grid cols-3">
+
+  <!-- ------------------------------------------------------------ device -->
+  <div class="card">
+    <div class="card-head">
+      <div class="card-title">ESP32 Device</div>
+      <span class="pill" id="d-pill">&mdash;</span>
+    </div>
+    <dl class="kv" id="d-kv">
+      <dt>Device ID</dt><dd>&mdash;</dd>
+    </dl>
+    <div class="btn-row" style="margin-top:16px;">
+      <button class="btn sm" data-cmd="CHECK_UPDATE">Check for update</button>
+      <button class="btn sm primary" data-cmd="START_OTA">Start OTA</button>
+      <button class="btn sm danger" data-cmd="REBOOT">Reboot ESP32</button>
+      <button class="btn sm ghost" id="btn-refresh">Refresh</button>
+    </div>
+    <div class="hint" style="margin-top:10px;">
+      Commands are queued and collected by the device on its next heartbeat.
+      Only CHECK_UPDATE, START_OTA and REBOOT exist.
+    </div>
+  </div>
+
+  <!-- ---------------------------------------------------------- firmware -->
+  <div class="card">
+    <div class="card-head">
+      <div class="card-title">Firmware</div>
+      <span class="pill" id="f-pill">&mdash;</span>
+    </div>
+    <div id="f-body"><div class="empty">No package published yet.</div></div>
+  </div>
+
+  <!-- ---------------------------------------------------------- security -->
+  <div class="card">
+    <div class="card-head">
+      <div class="card-title">Security Status</div>
+      <a class="card-hint" href="/security">Test lab &rarr;</a>
+    </div>
+    <div id="c-body" class="event-list"></div>
+  </div>
+
+  <!-- ------------------------------------------------------- ota progress -->
+  <div class="card span-2">
+    <div class="card-head">
+      <div class="card-title">OTA Update Progress</div>
+      <span class="card-hint" id="p-state">&mdash;</span>
+    </div>
+    <div id="p-body"></div>
+  </div>
+
+  <!-- ---------------------------------------------------------- pipeline -->
+  <div class="card">
+    <div class="card-head">
+      <div class="card-title">OTA Security Pipeline</div>
+    </div>
+    <div class="pipeline" id="pipe-body"></div>
+  </div>
+
+  <!-- ----------------------------------------------------------- history -->
+  <div class="card span-2">
+    <div class="card-head">
+      <div class="card-title">Recent OTA Activity</div>
+      <a class="card-hint" href="/history">Full history &rarr;</a>
+    </div>
+    <div class="event-list" id="h-body"></div>
+  </div>
+
+  <!-- ------------------------------------------------------------ events -->
+  <div class="card">
+    <div class="card-head">
+      <div class="card-title">Security Events</div>
+      <a class="card-hint" href="/security">All events &rarr;</a>
+    </div>
+    <div class="event-list" id="e-body"></div>
+  </div>
+
+</div>
+
+<div class="section-title">Live Logs</div>
+<div class="card pad-0" style="padding:14px;">
+  <div class="terminal" id="log-body" style="height:260px;"></div>
+  <div class="hint" style="margin-top:8px;">
+    Server log lines and everything the ESP32 reports. Full viewer at <a href="/logs">/logs</a>.
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('dashboard.static', filename='js/dashboard.js') }}"></script>
+{% endblock %}

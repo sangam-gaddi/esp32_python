@@ -34,6 +34,15 @@
 #define ASCON_128A_IV 0x00001000808c0001ull
 #define ASCON_80PQ_IV 0x00000000806c0800ull
 
+/* NIST SP 800-232 renamed the Ascon variants. The mapping to the historical
+ * v1.2 names already used in this file is:
+ *   Ascon-AEAD128  -> the 128-bit-rate AEAD IV below (historically "128a")
+ *   Ascon-Hash256  -> ASCON_HASH_IV
+ * Note SP 800-232 also switched byte order to little-endian, which is why these
+ * IVs and the v1.2 ones differ. */
+#define ASCON_AEAD128_IV ASCON_128A_IV
+#define ASCON_HASH256_IV ASCON_HASH_IV
+
 #define ASCON_HASH_IV 0x0000080100cc0002ull
 #define ASCON_HASHA_IV 0x00000801008c0002ull
 #define ASCON_XOF_IV 0x0000080000cc0003ull
