@@ -307,7 +307,12 @@
     if (keep) { $("pkg-source").value = keep; }
   }
 
-  /* -------------------------------------------------------------- status */
+  /* ------------------------------------------------- what is happening now
+   *
+   * Everything below is the device's own report. When it has not said
+   * something, this shows a dash rather than inventing it -- a progress bar
+   * that moves on its own would be a lie about a device that may be dead.
+   */
 
   function renderStatus(summary) {
     var chip = $("status-chip");
@@ -315,12 +320,107 @@
     if (!device) {
       chip.className = "status";
       chip.textContent = "server up · no device seen yet";
+    } else {
+      var online = device.status === "ONLINE" || device.status === "REBOOTING";
+      chip.className = "status " + (online ? "online" : "offline");
+      chip.textContent = device.device_id + " · "
+        + device.status.toLowerCase()
+        + (device.firmware_version ? " · v" + device.firmware_version : "");
+    }
+    renderDevice(summary);
+    renderProgress(device);
+    renderPipeline(summary.pipeline || []);
+    renderEvents(summary.history || []);
+  }
+
+  function renderDevice(summary) {
+    var d = summary.device;
+    if (!d) {
+      $("live-device").innerHTML =
+        "<span class=\"muted\">No device has reported in yet. Once the ESP32 "
+        + "boots and joins Wi-Fi it appears here within a few seconds.</span>";
       return;
     }
-    var online = device.status === "ONLINE" || device.status === "REBOOTING";
-    chip.className = "status " + (online ? "online" : "offline");
-    chip.textContent = device.device_id + " · " + device.status.toLowerCase()
-      + (device.firmware_version ? " · v" + device.firmware_version : "");
+
+    var word = { ONLINE: "ok", REBOOTING: "warn", OFFLINE: "bad" }[d.status]
+      || "dim";
+    var head = "<span class=\"tag " + word + "\">" + esc(d.status) + "</span> "
+      + "<b>" + esc(d.device_id) + "</b> is running firmware <b>"
+      + esc(d.firmware_version || "?") + "</b> (security "
+      + esc(d.security_version === null ? "?" : d.security_version) + ")"
+      + (d.partition ? " from <b>" + esc(d.partition) + "</b>" : "") + ".";
+
+    var update = summary.update;
+    if (update) {
+      head += " An update to <b>" + esc(update.available) + "</b> is published "
+        + "and waiting — the device takes it on its next check.";
+    } else if (d.status === "ONLINE") {
+      head += " It is up to date.";
+    }
+
+    var meta = [
+      ["IP", d.ip],
+      ["Wi-Fi", d.wifi_ssid ? d.wifi_ssid + " (" + d.wifi_rssi + " dBm)" : ""],
+      ["Free heap", d.free_heap ? d.free_heap.toLocaleString() + " B" : ""],
+      ["Uptime", d.uptime_s ? Math.floor(d.uptime_s / 60) + "m "
+        + (d.uptime_s % 60) + "s" : ""],
+      ["Checks", d.ota_checks],
+      ["Rejections", d.ota_rejections],
+      ["Last heartbeat", d.seconds_since_heartbeat === null ? ""
+        : d.seconds_since_heartbeat + "s ago"]
+    ].filter(function (p) {
+      return p[1] !== "" && p[1] !== null && p[1] !== undefined;
+    });
+
+    $("live-device").innerHTML = head + "<div class=\"device-meta\">"
+      + meta.map(function (p) {
+        return "<span>" + esc(p[0]) + ": " + esc(p[1]) + "</span>";
+      }).join("") + "</div>";
+  }
+
+  function renderProgress(device) {
+    var wrap = $("live-progress");
+    var total = device && device.ota_total;
+    var done = (device && device.ota_done) || 0;
+    var state = (device && device.ota_state) || "IDLE";
+
+    if (!device || state === "IDLE" || !total) {
+      wrap.classList.add("hidden");
+      return;
+    }
+    wrap.classList.remove("hidden");
+    var pct = Math.min(100, Math.round((done / total) * 100));
+    $("live-stage").textContent = "Update in progress — " + state;
+    $("live-bytes").textContent = done.toLocaleString() + " / "
+      + total.toLocaleString() + " bytes (" + pct + "%)";
+    $("live-bar").style.width = pct + "%";
+  }
+
+  function renderPipeline(stages) {
+    $("live-pipeline").innerHTML = stages.map(function (s) {
+      return "<li class=\"" + esc(s.state) + "\">" + esc(s.label) + "</li>";
+    }).join("");
+  }
+
+  function renderEvents(events) {
+    if (!events.length) {
+      $("live-events").innerHTML =
+        "<li class=\"muted\">Nothing recorded yet.</li>";
+      return;
+    }
+    $("live-events").innerHTML = events.slice(0, 6).map(function (e) {
+      var bad = e.result === "REJECTED" || e.result === "FAILED";
+      var when = new Date(e.ts * 1000).toLocaleTimeString();
+      return "<li><time>" + esc(when) + "</time>"
+        + "<span>" + esc(e.event) + (e.stage ? " · " + esc(e.stage) : "")
+        + "</span>"
+        + "<span class=\"res " + (bad ? "bad" : "ok") + "\">"
+        + esc(e.result) + "</span>"
+        + (e.to_version ? "<span class=\"mono\">" + esc(e.to_version)
+                          + "</span>" : "")
+        + (e.reason ? "<span class=\"muted\">" + esc(e.reason) + "</span>" : "")
+        + "</li>";
+    }).join("");
   }
 
   /* -------------------------------------------------------------- refresh */
@@ -336,9 +436,29 @@
     });
   }
 
+  /* Poll faster while an update is actually moving, so the bar tracks the
+   * device instead of lagging a heartbeat behind it. */
+  var statusTimer = null;
+  var pollMs = 0;
+
+  function schedule(ms) {
+    if (ms === pollMs) { return; }
+    pollMs = ms;
+    clearInterval(statusTimer);
+    statusTimer = setInterval(refreshStatus, ms);
+  }
+
   function refreshStatus() {
-    api("/api/dashboard/summary").then(renderStatus).catch(function () {
+    api("/api/dashboard/summary").then(function (summary) {
+      renderStatus(summary);
+      var device = summary.device;
+      var busy = device && device.ota_state && device.ota_state !== "IDLE";
+      schedule(busy ? 1500 : 8000);
+      // An update that just finished changes what is published.
+      if (busy && device.ota_state === "REBOOT") { refresh(); }
+    }).catch(function () {
       $("status-chip").textContent = "server unreachable";
+      schedule(8000);
     });
   }
 
@@ -374,5 +494,4 @@
 
   refresh();
   refreshStatus();
-  setInterval(refreshStatus, 10000);
 }());

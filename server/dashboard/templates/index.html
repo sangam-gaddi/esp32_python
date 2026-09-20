@@ -14,6 +14,7 @@
     <div class="logo"><span class="lock">&#128274;</span> Secure OTA</div>
     <div class="top-right">
       <span class="status" id="status-chip">checking&hellip;</span>
+      <a href="#how-it-works">How it works</a>
       <a href="#how-to-use">How to use</a>
     </div>
   </div>
@@ -25,6 +26,28 @@
     Upload a firmware <code>.bin</code>, turn it into a signed and encrypted
     package, and hand it to your ESP32. Three steps, in order.
   </p>
+
+  <!-- ------------------------------------------------------- live status -->
+  <section class="step live" id="live">
+    <h2>What is happening now</h2>
+
+    <div id="live-device" class="device-line">Waiting for the device&hellip;</div>
+
+    <div id="live-progress" class="progress-wrap">
+      <div class="progress-head">
+        <span id="live-stage">Idle</span>
+        <span id="live-bytes" class="mono"></span>
+      </div>
+      <div class="bar"><div class="bar-fill" id="live-bar"></div></div>
+    </div>
+
+    <ol class="pipeline" id="live-pipeline"></ol>
+
+    <div class="recent">
+      <h3>Recent activity</h3>
+      <ul id="live-events"><li class="muted">Nothing recorded yet.</li></ul>
+    </div>
+  </section>
 
   <!-- ------------------------------------------------------------ step 1 -->
   <section class="step">
@@ -142,6 +165,99 @@
         </tbody>
       </table>
     </div>
+  </section>
+
+  <!-- ----------------------------------------------- crypto explanation -->
+  <section class="step" id="how-it-works">
+    <h2>How the encryption and decryption work</h2>
+
+    <p class="hint">
+      Two different keys do two different jobs. A <b>shared</b> Ascon key hides
+      the firmware and proves it was not altered in transit. A <b>private</b>
+      Ed25519 key, which no device ever holds, proves <i>you</i> approved it.
+      Every device can decrypt; only this machine can authorise.
+    </p>
+
+    <h3>On this PC, when you press &ldquo;Create secure package&rdquo;</h3>
+    <ol class="crypto-steps">
+      <li>
+        <b>Ascon-Hash256 over the plaintext.</b> A 32-byte digest of your
+        <code>.bin</code> exactly as you built it. This is the fingerprint the
+        device will reproduce at the very end to prove the image it decrypted
+        is the image you signed.
+      </li>
+      <li>
+        <b>Ascon-AEAD128 encryption.</b> The firmware is encrypted under the
+        shared key with a <b>fresh random 16-byte nonce</b> &mdash; never
+        reused, so packaging the same image twice produces different
+        ciphertext. The header&rsquo;s first 80 bytes go in as
+        <i>associated data</i>: they are not encrypted, but they are covered by
+        the 16-byte authentication tag, so the version and size fields cannot
+        be edited without breaking it.
+      </li>
+      <li>
+        <b>Ed25519 signature.</b> The first 96 bytes of the header &mdash;
+        which by now contain the digest, the nonce, the AEAD tag, the version
+        and the security version &mdash; are signed with the private key in
+        <code>keys/</code>. Because the signature covers the AEAD tag, someone
+        who steals the shared Ascon key can read your firmware but still cannot
+        forge a package.
+      </li>
+    </ol>
+
+    <div class="wire">
+      <div class="wire-title">firmware_vX.sota</div>
+      <div class="wire-row">
+        <span class="fld sig">signature 64 B</span>
+        <span class="fld hdr">header 96 B<br><small>digest &middot; nonce &middot; tag &middot; versions</small></span>
+        <span class="fld ct">ciphertext + tag</span>
+      </div>
+      <div class="wire-note">
+        Ed25519 signs bytes 0&ndash;95 &middot; Ascon-AEAD128 authenticates
+        bytes 0&ndash;79 as associated data
+      </div>
+    </div>
+
+    <h3>On the ESP32, in this order &mdash; and it stops at the first failure</h3>
+    <ol class="crypto-steps device">
+      <li>
+        <b>Ed25519 verify</b> &mdash; against a public key compiled into the
+        device&rsquo;s own image, not one taken from the package. This happens
+        <i>before a single byte of firmware is downloaded</i>. Fails &rarr;
+        <code>INVALID SIGNATURE</code>, nothing else runs.
+      </li>
+      <li>
+        <b>Anti-rollback</b> &mdash; the package&rsquo;s security version is
+        compared against the highest the device has ever accepted, stored in
+        NVS. A perfectly signed older package is still refused. Fails &rarr;
+        <code>ROLLBACK DETECTED</code>.
+      </li>
+      <li>
+        <b>Ascon-AEAD128 decrypt</b> &mdash; streamed in 4 KB chunks straight
+        into the inactive OTA partition. The image is never held in RAM; the
+        whole update costs about 9.3 KB regardless of firmware size. The tag is
+        checked at the end, in constant time. Fails &rarr;
+        <code>ASCON AUTHENTICATION FAILED</code>.
+      </li>
+      <li>
+        <b>Ascon-Hash256 compare</b> &mdash; the digest of what was actually
+        decrypted is compared against the digest inside the signed header. This
+        is what ties the plaintext to your signature. Fails &rarr; the
+        partition is abandoned.
+      </li>
+      <li>
+        <b>Switch the boot partition</b> &mdash; only now, and only after all
+        four passed. The running firmware was never touched, so a failure at
+        any step above leaves the device exactly as it was.
+      </li>
+    </ol>
+
+    <p class="footnote" style="border:0;padding:0;margin-top:14px;">
+      The stage names in <b>What is happening now</b> at the top of this page
+      are these same steps, reported by the device as it performs them. The
+      server does none of this work and holds no keys &mdash; it stores bytes
+      and hands them over.
+    </p>
   </section>
 
   <!-- ------------------------------------------------------- how to use -->
