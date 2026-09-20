@@ -8,6 +8,7 @@ rule all live in sotalib/ and on the ESP32, exactly where they were before.
 Tables:
 
     devices           latest heartbeat per device (one row per device)
+    firmware_uploads  one row per accepted .bin, identified by its SHA-256
     firmware_releases packages created or uploaded through the dashboard
     ota_events        one row per OTA attempt/outcome reported by a device
     security_events   verification failures, rollback attempts, lab results
@@ -64,6 +65,23 @@ CREATE TABLE IF NOT EXISTS devices (
     raw                  TEXT
 );
 
+CREATE TABLE IF NOT EXISTS firmware_uploads (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    uploaded_at   REAL,
+    filename      TEXT,
+    original_name TEXT,
+    size          INTEGER,
+    sha256        TEXT,
+    remote_addr   TEXT,
+    image_ok      INTEGER,
+    chip          TEXT,
+    app_name      TEXT,
+    app_version   TEXT,
+    idf_version   TEXT,
+    compiled      TEXT,
+    verdict       TEXT
+);
+
 CREATE TABLE IF NOT EXISTS firmware_releases (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at       REAL,
@@ -116,6 +134,7 @@ CREATE TABLE IF NOT EXISTS device_commands (
     detail       TEXT
 );
 
+CREATE INDEX IF NOT EXISTS idx_uploads_sha ON firmware_uploads(sha256);
 CREATE INDEX IF NOT EXISTS idx_ota_events_ts ON ota_events(ts DESC);
 CREATE INDEX IF NOT EXISTS idx_security_events_ts ON security_events(ts DESC);
 CREATE INDEX IF NOT EXISTS idx_commands_pending ON device_commands(device_id, status);
@@ -203,6 +222,36 @@ def get_device(device_id: str) -> dict | None:
 
 def list_devices() -> list[dict]:
     return query("SELECT * FROM devices ORDER BY last_seen DESC")
+
+
+# ------------------------------------------------------------------- uploads
+
+def add_upload(**kw) -> int:
+    kw.setdefault("uploaded_at", time.time())
+    cols = ", ".join(kw)
+    marks = ", ".join(["?"] * len(kw))
+    return _exec(f"INSERT INTO firmware_uploads ({cols}) VALUES ({marks})",
+                 tuple(kw.values()))
+
+
+def get_upload_by_sha(sha256: str) -> dict | None:
+    """Find a previous upload of the same bytes, whatever it was called."""
+    return query_one("SELECT * FROM firmware_uploads WHERE sha256 = ? "
+                     "ORDER BY uploaded_at DESC", (sha256,))
+
+
+def get_upload(filename: str) -> dict | None:
+    return query_one("SELECT * FROM firmware_uploads WHERE filename = ? "
+                     "ORDER BY uploaded_at DESC", (filename,))
+
+
+def list_uploads(limit: int = 100) -> list[dict]:
+    return query("SELECT * FROM firmware_uploads ORDER BY uploaded_at DESC "
+                 "LIMIT ?", (limit,))
+
+
+def forget_upload(filename: str) -> None:
+    _exec("DELETE FROM firmware_uploads WHERE filename = ?", (filename,))
 
 
 # ------------------------------------------------------------------ releases

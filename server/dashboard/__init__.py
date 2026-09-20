@@ -1,8 +1,14 @@
-"""Secure OTA management dashboard -- a Flask blueprint bolted onto the
-existing OTA server.
+"""Secure OTA web interface -- a Flask blueprint bolted onto the OTA server.
+
+THE PAGE
+
+One page at "/", with one job: upload a firmware .bin, turn it into a signed and
+encrypted package, publish it to devices, and explain how to do all three. Every
+check applied to an upload lives in uploads.py and is described there.
 
 WHAT THIS LAYER IS ALLOWED TO DO
 
+    * accept, measure and store an uploaded .bin
     * remember what devices report (heartbeats, OTA outcomes)
     * queue one of three commands for a device to pick up
     * run the project's existing packaging and attack tooling in a subprocess
@@ -14,9 +20,14 @@ WHAT IT DOES NOT DO
     * it does not modify a package after signing -- publishing is a byte copy
     * it does not touch the existing device-facing routes in server/app.py
     * it does not hold, read back or return key material of any kind
+    * it does not serve anything back out of the uploads directory
 
-The dashboard shows only what a device actually reported. When nothing has been
-reported the UI says so; it never invents telemetry or progress.
+Several JSON endpoints here outlive the pages that used to draw them -- the
+device telemetry APIs, the OTA history, the security events and the attack lab.
+They are the device protocol and the project's test surface, and they cost the
+page nothing, so they stayed when the pages went. Only "/" has a UI.
+
+Nothing is invented. When a device has reported no value, the answer is null.
 """
 
 from __future__ import annotations
@@ -31,7 +42,7 @@ import time
 from flask import (Blueprint, Response, jsonify, render_template, request,
                    stream_with_context)
 
-from . import db, inventory, logbus, packaging, sectest
+from . import db, inventory, logbus, packaging, sectest, uploads
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 
@@ -600,19 +611,55 @@ def api_device_command_list(device_id: str):
 
 # ------------------------------------------------------------- firmware APIs
 
+def _uploads_view() -> list[dict]:
+    """Files on disk, annotated with what was recorded when they arrived.
+
+    The filesystem is the source of truth for what exists; the database only
+    adds the hash and the image facts. A file that predates the database, or
+    that was copied in by hand, still appears -- it is simply unannotated.
+    """
+    recorded = {row["filename"]: row for row in db.list_uploads(500)}
+    rows = []
+    for entry in inventory.uploads():
+        row = dict(entry)
+        info = recorded.get(entry["file"])
+        if info:
+            row.update({
+                "sha256": info["sha256"],
+                "original_name": info["original_name"],
+                "looks_like_esp32_image": bool(info["image_ok"]),
+                "chip": info["chip"], "app_name": info["app_name"],
+                "app_version": info["app_version"],
+                "idf_version": info["idf_version"],
+                "compiled": info["compiled"], "verdict": info["verdict"],
+            })
+        else:
+            row["verdict"] = "not uploaded through this site -- not inspected"
+        rows.append(row)
+    return rows
+
+
 @bp.route("/api/firmware")
 def api_firmware():
     return jsonify({
         "packages": inventory.all_packages(),
-        "uploads": inventory.uploads(),
+        "uploads": _uploads_view(),
         "releases": db.list_releases(),
         "keys_present": packaging.keys_present()[0],
+        "keys_note": packaging.keys_present()[1],
+        "max_upload_bytes": uploads.MAX_UPLOAD_BYTES,
     })
 
 
 @bp.route("/api/firmware/upload", methods=["POST"])
 def api_firmware_upload():
-    """Accept a plaintext .bin. Nothing cryptographic happens here."""
+    """Accept a plaintext .bin. Nothing cryptographic happens here.
+
+    Every check lives in server/dashboard/uploads.py, which streams the body to
+    a temporary file, caps its size as it arrives, hashes it, and only then
+    moves it into the uploads directory under a sanitised name. Any .bin is
+    accepted; what the file turns out to be is reported rather than guessed at.
+    """
     if "file" not in request.files:
         return jsonify({"error": "no file part in the request"}), 400
     f = request.files["file"]
@@ -620,31 +667,61 @@ def api_firmware_upload():
         return jsonify({"error": "no file selected"}), 400
 
     try:
-        name = packaging.safe_filename(f.filename)
-    except packaging.PackagingError as exc:
-        return jsonify({"error": str(exc)}), 400
-    if not name.lower().endswith(".bin"):
-        return jsonify({"error": "expected an ESP32 application image (.bin)"}), 400
+        stored = uploads.save_stream(f.stream, inventory.UPLOADS_DIR, f.filename)
+    except uploads.UploadError as exc:
+        logbus.push("SERVER", "WARNING",
+                    f"upload refused ({f.filename!r}): {exc}")
+        return jsonify({"error": str(exc)}), exc.status
 
-    inventory.UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
-    dest = inventory.UPLOADS_DIR / name
-    if dest.exists():
-        stem, suffix = dest.stem, dest.suffix
-        dest = inventory.UPLOADS_DIR / f"{stem}_{int(time.time())}{suffix}"
+    image = stored["image"]
 
-    f.save(dest)
-    size = dest.stat().st_size
-    if size == 0:
-        dest.unlink(missing_ok=True)
-        return jsonify({"error": "uploaded file is empty"}), 400
+    # Identified by content, not by name: the same bytes under a new name are
+    # the same firmware, and there is no reason to keep a second copy.
+    previous = db.get_upload_by_sha(stored["sha256"])
+    if previous and (inventory.UPLOADS_DIR / previous["filename"]).exists():
+        (inventory.UPLOADS_DIR / stored["file"]).unlink(missing_ok=True)
+        logbus.push("SERVER", "INFO",
+                    f"upload {f.filename!r} is byte-identical to "
+                    f"{previous['filename']}; kept the existing copy")
+        return jsonify({
+            "ok": True, "duplicate": True, "file": previous["filename"],
+            "size": previous["size"], "sha256": previous["sha256"],
+            "image": image,
+            "note": f"identical bytes were already uploaded as "
+                    f"{previous['filename']}; that copy is being reused",
+        }), 200
 
-    # An ESP32 app image starts with 0xE9. Advisory only -- the real check is
-    # esp_ota_end() on the device, which refuses a non-bootable image.
-    magic_ok = dest.read_bytes()[:1] == b"\xe9"
-    logbus.push("SERVER", "INFO",
-                f"firmware uploaded: {dest.name} ({size} bytes)")
-    return jsonify({"ok": True, "file": dest.name, "size": size,
-                    "looks_like_esp32_image": magic_ok}), 201
+    if previous:
+        # The recorded file is gone from disk; the row is stale.
+        db.forget_upload(previous["filename"])
+
+    db.add_upload(
+        filename=stored["file"], original_name=stored["original_name"],
+        size=stored["size"], sha256=stored["sha256"],
+        remote_addr=request.remote_addr or "",
+        image_ok=1 if image["magic_ok"] else 0,
+        chip=image["chip"], app_name=image["app_name"],
+        app_version=image["app_version"], idf_version=image["idf_version"],
+        compiled=image["compiled"], verdict=image["verdict"])
+
+    logbus.push("SERVER", "INFO" if image["magic_ok"] else "WARNING",
+                f"firmware uploaded: {stored['file']} ({stored['size']} bytes, "
+                f"sha256 {stored['sha256'][:16]}...) -- {image['verdict']}")
+    if not image["magic_ok"]:
+        db.add_security_event(
+            "warn", "UPLOAD_NOT_AN_IMAGE",
+            f"{stored['file']} does not look like an ESP32 application image",
+            f"First byte is {image['first_byte']}, expected 0xE9. The file was "
+            f"stored anyway; a device would refuse to boot it.",
+            "", "server")
+
+    return jsonify({
+        "ok": True, "duplicate": False, "file": stored["file"],
+        "original_name": stored["original_name"], "renamed": stored["renamed"],
+        "size": stored["size"], "sha256": stored["sha256"],
+        "image": image,
+        "looks_like_esp32_image": image["magic_ok"],
+    }), 201
 
 
 @bp.route("/api/firmware/package", methods=["POST"])
@@ -858,31 +935,19 @@ def api_logs_stream():
                              "X-Accel-Buffering": "no"})
 
 
-# --------------------------------------------------------------------- pages
+# ---------------------------------------------------------------------- page
 
+# One page, one job: get a .bin onto the device safely. `/dashboard` and
+# `/firmware` are kept as aliases so older links and docs still land somewhere.
+
+@bp.route("/")
 @bp.route("/dashboard")
-def page_dashboard():
-    return render_template("dashboard.html", page="dashboard")
-
-
 @bp.route("/firmware")
-def page_firmware():
-    return render_template("firmware.html", page="firmware")
-
-
-@bp.route("/history")
-def page_history():
-    return render_template("history.html", page="history")
-
-
-@bp.route("/security")
-def page_security():
-    return render_template("security.html", page="security")
-
-
-@bp.route("/logs")
-def page_logs():
-    return render_template("logs.html", page="logs")
+def page_index():
+    return render_template(
+        "index.html",
+        max_upload_mb=uploads.MAX_UPLOAD_BYTES // (1024 * 1024),
+        min_upload_bytes=uploads.MIN_UPLOAD_BYTES)
 
 
 # ------------------------------------------------------------------ register
@@ -927,4 +992,4 @@ def register(app) -> None:
     inventory.UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
     app.register_blueprint(bp)
     _observe_existing_routes(app)
-    logbus.push("SERVER", "INFO", "dashboard ready at /dashboard")
+    logbus.push("SERVER", "INFO", "web interface ready at /")

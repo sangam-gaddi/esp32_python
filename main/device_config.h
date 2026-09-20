@@ -54,7 +54,7 @@
  *   confidentiality of the metadata and the fact that an update is happening.
  *   Do not describe an HTTP demo as a secure transport.
  */
-#define OTA_SERVER_URL "http://10.177.78.146:8000"
+#define OTA_SERVER_URL "http://10.247.231.146:8000"
 
 /*
  * Set to 1 to allow plain-HTTP OTA URLs. The firmware refuses http:// unless

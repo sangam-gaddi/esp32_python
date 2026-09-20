@@ -120,12 +120,20 @@ def test_dashboard_never_serves_staged_packages_to_devices(dash):
 
 # ------------------------------------------------------------------- pages
 
-@pytest.mark.parametrize("path", ["/dashboard", "/firmware", "/history",
-                                  "/security", "/logs"])
-def test_pages_render(dash, path):
+@pytest.mark.parametrize("path", ["/", "/dashboard", "/firmware"])
+def test_the_one_page_renders(dash, path):
+    """One page, reachable at "/" and at the two old URLs."""
     r = dash["client"].get(path)
     assert r.status_code == 200
-    assert b"SECURE OTA" in r.data
+    assert b"Secure OTA" in r.data
+
+
+def test_the_page_explains_how_to_use_it(dash):
+    body = dash["client"].get("/").get_data(as_text=True)
+    assert 'id="how-to-use"' in body
+    for expected in ("tools/generate_keys.py", "idf.py build",
+                     "python server/app.py", "device_config.h"):
+        assert expected in body, f"the how-to-use section never mentions {expected}"
 
 
 # --------------------------------------------------------------- heartbeats
@@ -269,10 +277,29 @@ def test_upload_package_publish_flow(dash):
     assert c.get("/api/firmware/latest").get_json()["firmware_version"] == "4.1.0"
 
 
+def test_a_package_in_both_directories_is_listed_once_as_published(dash):
+    """Publishing keeps the staged copy, so a file can be in both places.
+
+    That is still one package, and it is published. Listing it twice -- once
+    with a Publish button that can only answer 409 -- misrepresents the state
+    of the server.
+    """
+    c = dash["client"]
+    dash["add_package"]("7.0.0", 7, published=True)
+    dash["add_package"]("7.0.0", 7, published=False)
+    assert (dash["packages"] / "firmware_v7.0.0.sota").exists()
+    assert (dash["staging"] / "firmware_v7.0.0.sota").exists()
+
+    rows = [p for p in c.get("/api/firmware").get_json()["packages"]
+            if p["file"] == "firmware_v7.0.0.sota"]
+    assert len(rows) == 1, f"listed {len(rows)} times, expected once"
+    assert rows[0]["published"] is True
+
+
 def test_packages_are_never_overwritten(dash):
     c = dash["client"]
     c.post("/api/firmware/upload",
-           data={"file": (io.BytesIO(b"\xe9" + os.urandom(511)), "app.bin")},
+           data={"file": (io.BytesIO(b"\xe9" + os.urandom(2047)), "app.bin")},
            content_type="multipart/form-data")
     first = c.post("/api/firmware/package",
                    json={"file": "app.bin", "version": "5.0.0",
@@ -284,26 +311,170 @@ def test_packages_are_never_overwritten(dash):
     assert again.status_code == 409
 
 
-def test_upload_rejects_non_bin_and_traversal(dash):
-    c = dash["client"]
-    r = c.post("/api/firmware/upload",
-               data={"file": (io.BytesIO(b"x"), "evil.exe")},
-               content_type="multipart/form-data")
-    assert r.status_code == 400
+# --------------------------------------------------------- upload security
 
+def send(client, data: bytes, name: str):
+    return client.post("/api/firmware/upload",
+                       data={"file": (io.BytesIO(data), name)},
+                       content_type="multipart/form-data")
+
+
+def image(size: int = 2048) -> bytes:
+    """Bytes that pass the ESP32 image magic check."""
+    return b"\xe9" + os.urandom(size - 1)
+
+
+def test_upload_accepts_any_bin_however_it_is_named(dash):
+    """'Any .bin' means any .bin. Awkward names are cleaned, never refused."""
+    c = dash["client"]
+    cases = {
+        "My Firmware (v2).BIN": "My_Firmware_v2.bin",
+        "../../../../etc/passwd.bin": "passwd.bin",
+        r"C:\Users\me\build\secure_ota.bin": "secure_ota.bin",
+        "  spaced name .bin": "spaced_name.bin",
+        "firmware\u00e9\u00e9.bin": "firmware.bin",
+        ".bin": "firmware.bin",
+        "NUL.bin": "_NUL.bin",
+    }
+    for sent, expected in cases.items():
+        r = send(c, image(), sent)
+        assert r.status_code == 201, (sent, r.get_json())
+        stored = r.get_json()["file"]
+        # A repeat name gets a suffix, so compare the stem that was derived.
+        assert stored.startswith(expected[:-4]), (sent, stored, expected)
+        assert stored.endswith(".bin")
+        # Everything landed in the uploads directory and nowhere else.
+        assert (dash["uploads"] / stored).exists()
+
+    for child in dash["uploads"].iterdir():
+        assert child.parent == dash["uploads"]
+        assert child.suffix == ".bin"
+
+
+def test_upload_refuses_anything_that_is_not_a_bin(dash):
+    for name in ("evil.exe", "app.bin.exe", "notes.txt", "app", ""):
+        r = send(dash["client"], image(), name)
+        assert r.status_code == 400, name
+    assert not list(dash["uploads"].iterdir())
+
+
+def test_upload_enforces_a_size_floor_and_ceiling(dash):
+    from server.dashboard import uploads
+
+    c = dash["client"]
+    assert send(c, b"\xe9" * 16, "tiny.bin").status_code == 400
+
+    too_big = uploads.MAX_UPLOAD_BYTES + 1
     r = c.post("/api/firmware/upload",
-               data={"file": (io.BytesIO(b"x"), "../../../../etc/passwd.bin")},
+               data={"file": (io.BytesIO(b"\xe9" * too_big), "huge.bin")},
                content_type="multipart/form-data")
-    # the name is reduced to its basename, so nothing escapes the uploads dir
-    if r.status_code == 201:
-        assert r.get_json()["file"] == "passwd.bin"
-        assert (dash["uploads"] / "passwd.bin").exists()
+    assert r.status_code == 413
+
+    # Neither attempt left a file or a fragment behind.
+    assert not list(dash["uploads"].iterdir())
+
+
+def test_upload_leaves_no_partial_file_when_the_stream_dies(dash):
+    """An upload that fails mid-stream must not be packageable."""
+    from server.dashboard import uploads
+
+    class Dying:
+        def __init__(self):
+            self.sent = 0
+
+        def read(self, n):
+            if self.sent >= 4096:
+                raise OSError("connection reset")
+            self.sent += n
+            return b"\xe9" * n
+
+    with pytest.raises(uploads.UploadError):
+        uploads.save_stream(Dying(), dash["uploads"], "half.bin")
+    assert not list(dash["uploads"].iterdir())
+
+
+def test_upload_identifies_the_file_by_its_contents(dash):
+    c = dash["client"]
+    blob = image()
+
+    first = send(c, blob, "app.bin").get_json()
+    assert len(first["sha256"]) == 64
+    assert first["duplicate"] is False
+
+    # Same bytes, different name: one copy, and the site says why.
+    again = send(c, blob, "renamed.bin").get_json()
+    assert again["duplicate"] is True
+    assert again["file"] == first["file"]
+    assert len(list(dash["uploads"].iterdir())) == 1
+
+    different = send(c, image(), "app.bin").get_json()
+    assert different["duplicate"] is False
+    assert different["sha256"] != first["sha256"]
+    assert different["file"] != first["file"], "an upload must never overwrite"
+    assert len(list(dash["uploads"].iterdir())) == 2
+
+
+def test_upload_reports_what_the_image_says_about_itself(dash):
+    """The esp_app_desc structure is read back, so a wrong .bin is obvious."""
+    import struct
+
+    blob = bytearray(image(512))
+    struct.pack_into("<H", blob, 12, 0)                      # chip id: ESP32
+    blob[0x20:0xB0] = bytes(0x90)                            # clear esp_app_desc
+    struct.pack_into("<I", blob, 0x20, 0xABCD5432)           # app desc magic
+    blob[0x30:0x35] = b"9.9.9"                               # version[32]
+    blob[0x50:0x5A] = b"secure_ota"                          # project_name[32]
+    blob[0x90:0x96] = b"v5.3.1"                              # idf_ver[32]
+    blob = bytes(blob) + os.urandom(1536)
+
+    facts = send(dash["client"], blob, "good.bin").get_json()["image"]
+    assert facts["magic_ok"] is True
+    assert facts["chip"] == "ESP32"
+    assert facts["app_name"] == "secure_ota"
+    assert facts["app_version"] == "9.9.9"
+    assert facts["idf_version"] == "v5.3.1"
+
+
+def test_a_file_that_is_not_an_esp32_image_is_flagged_but_kept(dash):
+    """Any .bin is accepted -- but the site must not pretend it is firmware."""
+    c = dash["client"]
+    r = send(c, b"MZ" + os.urandom(2046), "windows.bin")
+    assert r.status_code == 201
+
+    body = r.get_json()
+    assert body["looks_like_esp32_image"] is False
+    assert body["image"]["first_byte"] == "0x4D"
+    assert (dash["uploads"] / body["file"]).exists()
+
+    kinds = [e["kind"] for e in c.get("/api/security/events").get_json()["events"]]
+    assert "UPLOAD_NOT_AN_IMAGE" in kinds
+
+
+def test_the_uploads_directory_is_never_served(dash):
+    """An upload is input, not content. Nothing may read it back over HTTP."""
+    c = dash["client"]
+    name = send(c, image(), "app.bin").get_json()["file"]
+    for path in (f"/api/firmware/{name}/package",
+                 f"/dashboard/static/../../firmware/uploads/{name}",
+                 f"/uploads/{name}", f"/firmware/uploads/{name}"):
+        assert c.get(path).status_code in (400, 404, 405), path
+
+
+def test_the_upload_record_says_which_file_arrived(dash):
+    c = dash["client"]
+    body = send(c, image(), "My Build.bin").get_json()
+
+    row = next(r for r in c.get("/api/firmware").get_json()["uploads"]
+               if r["file"] == body["file"])
+    assert row["sha256"] == body["sha256"]
+    assert row["original_name"] == "My Build.bin"
+    assert row["looks_like_esp32_image"] is True
 
 
 def test_package_creation_validates_versions(dash):
     c = dash["client"]
     c.post("/api/firmware/upload",
-           data={"file": (io.BytesIO(b"\xe9" + os.urandom(255)), "app.bin")},
+           data={"file": (io.BytesIO(b"\xe9" + os.urandom(2047)), "app.bin")},
            content_type="multipart/form-data")
     for version in ("1.0", "300.0.0", "abc", "1.0.0.0", ""):
         r = c.post("/api/firmware/package",
@@ -539,7 +710,7 @@ def test_dashboard_holds_no_key_material_in_its_own_responses(dash):
     no route may return their contents."""
     c = dash["client"]
     r = c.post("/api/firmware/upload",
-               data={"file": (io.BytesIO(b"\xe9" + os.urandom(255)), "k.bin")},
+               data={"file": (io.BytesIO(b"\xe9" + os.urandom(2047)), "k.bin")},
                content_type="multipart/form-data")
     assert r.status_code == 201
     body = c.post("/api/firmware/package",

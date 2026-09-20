@@ -1,0 +1,378 @@
+/* Secure OTA -- the whole page, in one file.
+ *
+ * Nothing security-relevant happens in the browser. This asks the server to
+ * upload, package and publish, and renders what it answers. No key ever
+ * reaches this file, and no value shown here is trusted by the device.
+ */
+
+(function () {
+  "use strict";
+
+  var $ = function (id) { return document.getElementById(id); };
+
+  function esc(value) {
+    return String(value === null || value === undefined ? "" : value)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function bytes(n) {
+    n = Number(n) || 0;
+    if (n < 1024) { return n + " B"; }
+    if (n < 1024 * 1024) { return (n / 1024).toFixed(1) + " KB"; }
+    return (n / (1024 * 1024)).toFixed(2) + " MB";
+  }
+
+  function when(epochSeconds) {
+    if (!epochSeconds) { return "—"; }
+    return new Date(epochSeconds * 1000).toLocaleString();
+  }
+
+  function toast(message, kind) {
+    var el = document.createElement("div");
+    el.className = "toast" + (kind ? " " + kind : "");
+    el.textContent = message;
+    $("toasts").appendChild(el);
+    setTimeout(function () { el.remove(); }, 6000);
+  }
+
+  function api(path, options) {
+    return fetch(path, options).then(function (response) {
+      return response.json().catch(function () { return {}; })
+        .then(function (body) {
+          if (!response.ok) {
+            throw new Error(body.error || ("HTTP " + response.status));
+          }
+          return body;
+        });
+    });
+  }
+
+  /* ------------------------------------------------------------ step 1 */
+
+  var chosen = null;
+
+  function showChosen(file) {
+    chosen = file;
+    $("drop").classList.toggle("chosen", !!file);
+    $("drop-main").textContent = file
+      ? file.name + "  (" + bytes(file.size) + ")"
+      : "Choose a .bin file, or drag one here";
+    $("btn-upload").disabled = !file;
+  }
+
+  function imageFacts(image) {
+    var rows = [
+      ["Looks like", image.verdict || "—"],
+      ["Chip", image.chip],
+      ["Project name", image.app_name],
+      ["App version", image.app_version],
+      ["Built with", image.idf_version],
+      ["Compiled", image.compiled],
+      ["First byte", image.first_byte]
+    ].filter(function (pair) { return pair[1]; });
+
+    return "<dl class=\"facts\">" + rows.map(function (pair) {
+      return "<dt>" + esc(pair[0]) + "</dt><dd>" + esc(pair[1]) + "</dd>";
+    }).join("") + "</dl>";
+  }
+
+  function renderUpload(result) {
+    var image = result.image || {};
+    var good = image.magic_ok;
+    var head;
+
+    if (result.duplicate) {
+      head = "Already uploaded — reusing " + result.file;
+    } else if (good) {
+      head = "Uploaded and checked: " + result.file;
+    } else {
+      head = "Stored, but this does not look like an ESP32 image";
+    }
+
+    var extra = "";
+    if (result.renamed && result.original_name) {
+      extra += "<p>Stored as <code>" + esc(result.file) + "</code> — your "
+        + "name <code>" + esc(result.original_name) + "</code> contained "
+        + "characters that are not allowed in a stored file name.</p>";
+    }
+    if (result.note) {
+      extra += "<p>" + esc(result.note) + "</p>";
+    }
+    if (!good) {
+      extra += "<p>It was kept so you can package it anyway, but a device "
+        + "would refuse to boot it. Check you picked "
+        + "<code>build/secure_ota.bin</code>.</p>";
+    }
+
+    $("upload-out").innerHTML =
+      "<div class=\"panel " + (good ? "ok" : "warn") + "\">"
+      + "<b class=\"head\">" + esc(head) + "</b>"
+      + "<dl class=\"facts\">"
+      + "<dt>Size</dt><dd>" + bytes(result.size) + "</dd>"
+      + "<dt>SHA-256</dt><dd class=\"mono\">" + esc(result.sha256 || "") + "</dd>"
+      + "</dl>" + imageFacts(image) + extra + "</div>";
+  }
+
+  function upload(event) {
+    event.preventDefault();
+    if (!chosen) { return; }
+
+    var data = new FormData();
+    data.append("file", chosen);
+    $("btn-upload").disabled = true;
+    $("btn-upload").textContent = "Uploading…";
+    $("upload-out").innerHTML = "";
+
+    api("/api/firmware/upload", { method: "POST", body: data })
+      .then(function (result) {
+        renderUpload(result);
+        toast(result.duplicate ? "Already had those bytes" : "Upload accepted",
+              "ok");
+        return refresh(result.file);
+      })
+      .catch(function (error) {
+        $("upload-out").innerHTML =
+          "<div class=\"panel bad\"><b class=\"head\">Upload refused</b>"
+          + esc(error.message) + "</div>";
+        toast(error.message, "bad");
+      })
+      .then(function () {
+        $("btn-upload").textContent = "Upload";
+        $("btn-upload").disabled = !chosen;
+      });
+  }
+
+  /* ------------------------------------------------------------ step 2 */
+
+  function renderStages(result) {
+    var stages = (result.stages || []).map(function (stage) {
+      return "<li class=\"" + (stage.ok ? "" : "no") + "\">"
+        + esc(stage.label) + "</li>";
+    }).join("");
+
+    var facts = [
+      ["Package", result.filename],
+      ["Ascon-Hash256", result.firmware_hash],
+      ["Ascon nonce", result.nonce],
+      ["Ascon tag", result.auth_tag],
+      ["Ed25519 signature", result.signature],
+      ["Took", result.duration_ms ? result.duration_ms + " ms" : ""]
+    ].filter(function (pair) { return pair[1]; })
+      .map(function (pair) {
+        return "<dt>" + esc(pair[0]) + "</dt><dd class=\"mono\">"
+          + esc(pair[1]) + "</dd>";
+      }).join("");
+
+    $("pkg-out").innerHTML =
+      "<div class=\"panel ok\"><b class=\"head\">Package created and "
+      + "self-verified</b><ul class=\"stages\">" + stages + "</ul>"
+      + "<dl class=\"facts\">" + facts + "</dl>"
+      + "<p>It is staged, so devices are not offered it yet. Publish it in "
+      + "step 3 below.</p></div>";
+  }
+
+  function makePackage(event) {
+    event.preventDefault();
+    var source = $("pkg-source").value;
+    if (!source) {
+      toast("Upload a .bin first", "bad");
+      return;
+    }
+
+    var button = $("btn-package");
+    button.disabled = true;
+    button.textContent = "Signing and encrypting…";
+    $("pkg-out").innerHTML = "";
+
+    api("/api/firmware/package", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        file: source,
+        version: $("pkg-version").value.trim(),
+        security_version: Number($("pkg-security").value)
+      })
+    })
+      .then(function (result) {
+        renderStages(result);
+        toast("Package ready: " + result.filename, "ok");
+        return refresh();
+      })
+      .catch(function (error) {
+        $("pkg-out").innerHTML =
+          "<div class=\"panel bad\"><b class=\"head\">Could not create the "
+          + "package</b>" + esc(error.message) + "</div>";
+        toast(error.message, "bad");
+      })
+      .then(function () {
+        button.disabled = false;
+        button.textContent = "Create secure package";
+      });
+  }
+
+  /* ------------------------------------------------------------ step 3 */
+
+  function act(path, label) {
+    api(path, { method: "POST" })
+      .then(function () { toast(label, "ok"); return refresh(); })
+      .catch(function (error) { toast(error.message, "bad"); });
+  }
+
+  /* The file name comes from disk, so it is never interpolated into markup
+   * that the browser will execute. It rides on a data attribute and is read
+   * back here. */
+  $("pkg-body").addEventListener("click", function (event) {
+    var button = event.target.closest("button[data-act]");
+    if (!button) { return; }
+    var name = button.getAttribute("data-file");
+    if (button.getAttribute("data-act") === "publish") {
+      act("/api/firmware/" + encodeURIComponent(name) + "/publish",
+          name + " is now offered to devices");
+    } else {
+      act("/api/firmware/" + encodeURIComponent(name) + "/unpublish",
+          name + " withdrawn");
+    }
+  });
+
+  function renderPackages(packages) {
+    if (!packages.length) {
+      $("pkg-body").innerHTML =
+        "<tr><td colspan=\"6\" class=\"empty\">No packages yet — "
+        + "finish steps 1 and 2.</td></tr>";
+      return;
+    }
+
+    $("pkg-body").innerHTML = packages.map(function (row) {
+      var status, action;
+      if (!row.valid) {
+        status = "<span class=\"tag bad\">unreadable</span>";
+        action = "";
+      } else if (row.published) {
+        status = "<span class=\"tag ok\">published</span>";
+        action = "<button class=\"btn small quiet\" data-act=\"unpublish\" "
+          + "data-file=\"" + esc(row.file) + "\">Withdraw</button>";
+      } else {
+        status = "<span class=\"tag dim\">staged</span>";
+        action = "<button class=\"btn small\" data-act=\"publish\" "
+          + "data-file=\"" + esc(row.file) + "\">Publish</button>";
+      }
+
+      return "<tr><td class=\"mono\">" + esc(row.file) + "</td>"
+        + "<td>" + esc(row.firmware_version || "—") + "</td>"
+        + "<td>" + esc(row.security_version === undefined
+                       ? "—" : row.security_version) + "</td>"
+        + "<td>" + bytes(row.package_size) + "</td>"
+        + "<td>" + status + "</td>"
+        + "<td>" + action + "</td></tr>";
+    }).join("");
+  }
+
+  /* ------------------------------------------------------- uploaded files */
+
+  function renderUploads(rows, select) {
+    if (!rows.length) {
+      $("up-body").innerHTML =
+        "<tr><td colspan=\"5\" class=\"empty\">Nothing uploaded yet.</td></tr>";
+      $("pkg-source").innerHTML =
+        "<option value=\"\">upload a .bin first</option>";
+      return;
+    }
+
+    $("up-body").innerHTML = rows.map(function (row) {
+      var what;
+      if (row.looks_like_esp32_image === true) {
+        what = "<span class=\"tag ok\">ESP32 image</span>";
+        if (row.app_name) { what += " " + esc(row.app_name); }
+        if (row.app_version) { what += " <span class=\"mono\">" + esc(row.app_version) + "</span>"; }
+      } else if (row.looks_like_esp32_image === false) {
+        what = "<span class=\"tag warn\">not an ESP32 image</span>";
+      } else {
+        what = "<span class=\"tag dim\">not inspected</span>";
+      }
+
+      return "<tr><td class=\"mono\">" + esc(row.file) + "</td>"
+        + "<td>" + bytes(row.size) + "</td>"
+        + "<td class=\"mono\">" + esc((row.sha256 || "—").slice(0, 16))
+        + (row.sha256 ? "…" : "") + "</td>"
+        + "<td>" + what + "</td>"
+        + "<td>" + esc(when(row.modified)) + "</td></tr>";
+    }).join("");
+
+    var keep = select || $("pkg-source").value;
+    $("pkg-source").innerHTML = rows.map(function (row) {
+      return "<option value=\"" + esc(row.file) + "\">" + esc(row.file)
+        + " — " + bytes(row.size) + "</option>";
+    }).join("");
+    if (keep) { $("pkg-source").value = keep; }
+  }
+
+  /* -------------------------------------------------------------- status */
+
+  function renderStatus(summary) {
+    var chip = $("status-chip");
+    var device = summary.device;
+    if (!device) {
+      chip.className = "status";
+      chip.textContent = "server up · no device seen yet";
+      return;
+    }
+    var online = device.status === "ONLINE" || device.status === "REBOOTING";
+    chip.className = "status " + (online ? "online" : "offline");
+    chip.textContent = device.device_id + " · " + device.status.toLowerCase()
+      + (device.firmware_version ? " · v" + device.firmware_version : "");
+  }
+
+  /* -------------------------------------------------------------- refresh */
+
+  function refresh(selectFile) {
+    return api("/api/firmware").then(function (data) {
+      renderUploads(data.uploads || [], selectFile);
+      renderPackages(data.packages || []);
+      $("keys-note").textContent = data.keys_present ? "" : data.keys_note || "";
+      $("btn-package").disabled = !data.keys_present;
+    }).catch(function (error) {
+      toast("Could not read the firmware list: " + error.message, "bad");
+    });
+  }
+
+  function refreshStatus() {
+    api("/api/dashboard/summary").then(renderStatus).catch(function () {
+      $("status-chip").textContent = "server unreachable";
+    });
+  }
+
+  /* ----------------------------------------------------------------- wire */
+
+  var drop = $("drop");
+
+  ["dragenter", "dragover"].forEach(function (name) {
+    drop.addEventListener(name, function (event) {
+      event.preventDefault();
+      drop.classList.add("over");
+    });
+  });
+
+  ["dragleave", "drop"].forEach(function (name) {
+    drop.addEventListener(name, function (event) {
+      event.preventDefault();
+      drop.classList.remove("over");
+    });
+  });
+
+  drop.addEventListener("drop", function (event) {
+    var files = event.dataTransfer && event.dataTransfer.files;
+    if (files && files.length) { showChosen(files[0]); }
+  });
+
+  $("bin-file").addEventListener("change", function (event) {
+    showChosen(event.target.files[0] || null);
+  });
+
+  $("upload-form").addEventListener("submit", upload);
+  $("pkg-form").addEventListener("submit", makePackage);
+
+  refresh();
+  refreshStatus();
+  setInterval(refreshStatus, 10000);
+}());

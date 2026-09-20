@@ -153,7 +153,7 @@ main/                       application layer -- no cryptography implemented her
   ota_manager.c/.h          the state machine, HTTP, streaming install
   wifi_manager.c/.h         station bring-up and retry
   device_keys.c/.h          NVS-backed key provisioning, fingerprint logging
-  device_report.c/.h        dashboard heartbeat/events + 3-command allowlist
+  device_report.c/.h        server heartbeat/events + 3-command allowlist
   version_manager.c/.h      monotonic version state for anti-rollback
   server_ca_cert.pem        embedded CA for HTTPS (placeholder until generated)
 
@@ -180,11 +180,11 @@ tools/
   verify_package.py         inspect and verify, stage by stage
   tamper_package.py         build the nine attack packages
   make_dev_certs.py         development CA + server certificate for HTTPS
-  simulate_device.py        SIMULATED device for testing the dashboard UI
+  simulate_device.py        SIMULATED device for testing the web interface
 
 server/
   app.py                    Flask metadata + package server (holds no keys)
-  dashboard/                management UI: blueprint, SQLite, templates, static
+  dashboard/                web interface: blueprint, upload security, SQLite
   packages/                 published .sota files (the device sees these)
   staging/                  built but unpublished packages       (git-ignored)
   certs/                    development TLS material              (git-ignored)
@@ -195,7 +195,7 @@ tests/
   test_signature.py         RFC 8032 vectors; signature binding; key hygiene
   test_negative.py          the seven attack scenarios, through the real CLI
   test_server.py            server behaviour and key hygiene
-  test_dashboard.py         dashboard APIs, and that the OTA API is unchanged
+  test_dashboard.py         web APIs, upload security, and that the OTA API is unchanged
   vectors/                  official Ascon KAT files
   host/
     build_and_run.py        compile + run the C tests on the development machine

@@ -86,8 +86,20 @@ def scan_dir(directory: pathlib.Path, published: bool) -> list[dict]:
 
 
 def all_packages() -> list[dict]:
-    """Published first, then staged, newest firmware version first."""
-    rows = scan_dir(PACKAGES_DIR, True) + scan_dir(STAGING_DIR, False)
+    """One row per package file, published first, newest firmware version first.
+
+    Publishing copies a package into packages/ and leaves the staged copy
+    alone, and withdrawing copies it back, so the same file name legitimately
+    exists in both directories. That is one package, and it is published --
+    showing it twice, once with a Publish button that can only fail, is a lie
+    about the state of the system. The published copy wins.
+    """
+    published = scan_dir(PACKAGES_DIR, True)
+    live = {row["file"] for row in published}
+    staged = [row for row in scan_dir(STAGING_DIR, False)
+              if row["file"] not in live]
+
+    rows = published + staged
     rows.sort(key=lambda r: (r["published"],
                              r.get("firmware_version_code", 0),
                              r["modified"]), reverse=True)

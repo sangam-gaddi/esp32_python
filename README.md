@@ -32,7 +32,7 @@ firmware_v2.sota ──► OTA server ──► ESP32
 | | |
 | --- | --- |
 | Firmware build | **passes** — ESP-IDF 5.3.1, target `esp32`, 926,720-byte image, zero warnings |
-| Host test suite | **130 passed** (Python) |
+| Host test suite | **175 passed** (Python) |
 | C test suite | **16 groups / ~15,200 cases passed** (the same sources the firmware links) |
 | Cryptography | validated against **1025** Ascon-Hash256 + **1089** Ascon-AEAD128 official KAT vectors, and RFC 8032 Ed25519 vectors |
 | Attack scenarios | **9** tamper modes, all rejected; **7** scenario tests |
@@ -149,6 +149,17 @@ python server/app.py
 # -> within 60 s the device downloads, verifies, installs and reboots into 2.0.0
 ```
 
+### Or do steps 6 and 7 in a browser
+
+Start the server first and open <http://localhost:8000/>. The page uploads
+`build/secure_ota.bin`, builds the signed package and publishes it to your
+devices, and its **How to use** section spells out the same sequence for anyone
+who has not read this file. Everything cryptographic still happens in
+`tools/create_ota_package.py` on this machine — the page just runs it.
+
+On Windows, run all of this from the **ESP-IDF PowerShell** so `idf.py` is on
+the path, and use `copy` in place of `cp` at step 3.
+
 Full walkthrough with expected serial output:
 **[`docs/DEMO.md`](docs/DEMO.md)**.
 
@@ -215,7 +226,7 @@ python server/app.py --https --port 8443    # HTTPS, needs tools/make_dev_certs.
 
 | Endpoint | Purpose |
 | --- | --- |
-| `GET /` | status page |
+| `GET /` | the web interface (below) |
 | `GET /health` | liveness |
 | `GET /api/firmware/latest` | metadata for the newest package |
 | `GET /api/firmware/list` | every package, plus any it rejected |
@@ -224,24 +235,35 @@ python server/app.py --https --port 8443    # HTTPS, needs tools/make_dev_certs.
 The JSON metadata is **untrusted** — a hint so the device can skip a needless
 download. Every value that matters is re-read from the signed package header.
 
-### The management dashboard
+### The web interface
 
-The same process also serves the **Secure OTA Control Center** at
-<http://localhost:8000/dashboard> — device status and telemetry, firmware
-upload/packaging/publishing, OTA control, live update progress, OTA history, a
-security-event monitor with an attack test lab, and a live log viewer.
+The same process serves one page at <http://localhost:8000/>. It has one job —
+get a firmware `.bin` onto a device — and it explains itself:
 
 ```
-/dashboard   overview      /firmware   releases and packaging
-/history     OTA history   /security   crypto status + Security Test Lab
-/logs        live logs
+  1  Upload your firmware        a .bin, checked on the way in
+  2  Make it a secure package    Ascon-Hash256 + Ascon-AEAD128 + Ed25519
+  3  Send it to your devices     publish the signed bytes, unmodified
+
+  How to use                     what to type, and what to do when it fails
 ```
 
-It is an additive management layer: the endpoints above are unchanged, the
-dashboard performs no cryptography of its own, and a package is never modified
-after signing. The device side is one extra task (`main/device_report.c`) that
-sends telemetry and collects at most three commands — `CHECK_UPDATE`,
-`START_OTA`, `REBOOT`. See [`docs/DASHBOARD.md`](docs/DASHBOARD.md).
+**Any `.bin` is accepted**, whatever it is called. The name is sanitised rather
+than refused — directory components, `..`, drive letters, unicode, whitespace
+and Windows device names are all neutralised, and the file always lands inside
+`server/firmware/uploads/`. The size is capped at 16 MB *while the body
+arrives*, the upload is written to a temporary file and moved into place only
+once complete, SHA-256 identifies it by content so the same bytes are never
+stored twice, and the ESP32 image header is parsed and reported back so a wrong
+file is obvious before it is signed. A file that is not an ESP32 image is
+flagged and kept, not silently passed off as firmware. Nothing in that path
+reads a key, and no route serves a file back out of the uploads directory.
+
+It is an additive management layer: the endpoints above are unchanged, the page
+performs no cryptography of its own, and a package is never modified after
+signing. The device side is one extra task (`main/device_report.c`) that sends
+telemetry and collects at most three commands — `CHECK_UPDATE`, `START_OTA`,
+`REBOOT`. See [`docs/WEB_INTERFACE.md`](docs/WEB_INTERFACE.md).
 
 For HTTPS:
 
@@ -261,7 +283,7 @@ See [`server/README.md`](server/README.md).
 ## 8. Tests
 
 ```bash
-# Python: cryptography, format, signatures, attacks, server, dashboard (165 tests)
+# Python: cryptography, format, signatures, attacks, server, web interface (175 tests)
 python -m pytest tests/ -v
 
 # C: the same sources the firmware links, compiled and run on this machine
@@ -375,7 +397,7 @@ correctly and proves it against official vectors. It is not audited, and it is n
 | [`docs/PACKAGE_FORMAT.md`](docs/PACKAGE_FORMAT.md) | normative `.sota` wire format, byte by byte |
 | [`docs/SECURITY.md`](docs/SECURITY.md) | threat model, what is and is not defended, honest limitations |
 | [`docs/DEMO.md`](docs/DEMO.md) | step-by-step demonstration, successful update and five attacks |
-| [`docs/DASHBOARD.md`](docs/DASHBOARD.md) | the Secure OTA Control Center: pages, device protocol, command allowlist, key handling |
+| [`docs/WEB_INTERFACE.md`](docs/WEB_INTERFACE.md) | the web interface: upload security, device protocol, command allowlist, key handling |
 | [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) | measured static sizes; runtime harness with figures left blank |
 | [`components/ed25519/README.md`](components/ed25519/README.md) | TweetNaCl provenance and verification hashes |
 | [`keys/README.md`](keys/README.md) | which key belongs where |
@@ -426,7 +448,7 @@ components/ota_package/ package parsing + verification    (no ESP-IDF deps)
 sotalib/                host implementation of the same primitives and format
 tools/                  key generation, packaging, verification, tampering, certs
 server/                 Flask OTA server (holds no keys)
-server/dashboard/       management dashboard: pages, APIs, SQLite record
+server/dashboard/       web interface: the upload page, APIs, SQLite record
 tests/                  Python suites, C host suites, official KAT vectors
 docs/                   audit, architecture, format, security, demo, benchmarks
 partitions.csv          factory + ota_0 + ota_1 + otadata

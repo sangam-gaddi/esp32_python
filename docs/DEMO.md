@@ -14,11 +14,11 @@ Total time: about 25 minutes for the full script, or 5 minutes for
 no board.
 
 **Presenting to someone?** Run the same script with
-<http://localhost:8000/dashboard> on screen. The Secure OTA Control Center shows
-the device, the versions, the verification pipeline and the live progress of each
-step described below, and its Security Test Lab runs the attack tools in §5 at the
-click of a button. It changes nothing about how the update works — see
-[`DASHBOARD.md`](DASHBOARD.md).
+<http://localhost:8000/> on screen. The web page does the upload, packaging and
+publishing steps below without a command line, reports what it found inside the
+uploaded image, and carries a **How to use** section you can read from. It
+changes nothing about how the update works — see
+[`WEB_INTERFACE.md`](WEB_INTERFACE.md).
 
 ---
 

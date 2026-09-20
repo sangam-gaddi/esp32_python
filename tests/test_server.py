@@ -109,12 +109,17 @@ def test_list_reports_every_package(server):
 
 
 def test_index_page_renders(server):
+    """"/" is the web interface: the upload page, not a package listing.
+
+    The package table on it is filled from /api/firmware by the browser, which
+    is tested in test_dashboard.py. What is asserted here is what the page
+    itself must always say.
+    """
     server["add"]("2.0.0", 2)
     r = server["client"].get("/")
     assert r.status_code == 200
-    assert b"Secure OTA update server" in r.data
-    assert b"2.0.0" in r.data
-    # the HTTP-transport caveat must be visible, not buried
+    assert b"Secure OTA" in r.data
+    # the two caveats must be on the page, not buried in a doc
     assert b"development only" in r.data.lower()
     assert b"holds no cryptographic keys" in r.data.lower()
 

@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Secure OTA &mdash; Firmware Upload</title>
+<link rel="stylesheet" href="{{ url_for('dashboard.static', filename='css/site.css') }}">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#128274;</text></svg>">
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap top-inner">
+    <div class="logo"><span class="lock">&#128274;</span> Secure OTA</div>
+    <div class="top-right">
+      <span class="status" id="status-chip">checking&hellip;</span>
+      <a href="#how-to-use">How to use</a>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <p class="lede">
+    Upload a firmware <code>.bin</code>, turn it into a signed and encrypted
+    package, and hand it to your ESP32. Three steps, in order.
+  </p>
+
+  <!-- ------------------------------------------------------------ step 1 -->
+  <section class="step">
+    <h2><span class="num">1</span> Upload your firmware</h2>
+
+    <form id="upload-form">
+      <label class="drop" id="drop" for="bin-file">
+        <input type="file" id="bin-file" accept=".bin,application/octet-stream" hidden>
+        <span class="drop-icon">&#8681;</span>
+        <span class="drop-main" id="drop-main">Choose a .bin file, or drag one here</span>
+        <span class="drop-sub">
+          any <code>.bin</code> is accepted &middot; up to {{ max_upload_mb }} MB
+        </span>
+      </label>
+      <button class="btn" type="submit" id="btn-upload" disabled>Upload</button>
+    </form>
+
+    <div id="upload-out" class="out"></div>
+
+    <details class="note">
+      <summary>What happens to the file when you upload it</summary>
+      <ul>
+        <li><b>The name is cleaned, not trusted.</b> Folders, drive letters,
+          <code>..</code>, spaces and odd characters are stripped, so the file
+          always lands inside <code>server/firmware/uploads/</code> and nowhere
+          else. Your original name is kept in the record.</li>
+        <li><b>Size is capped as it arrives.</b> Anything over
+          {{ max_upload_mb }} MB is refused while the body is still being
+          received, and capped again as it is written; anything under
+          {{ min_upload_bytes }} bytes is thrown away once its size is known.</li>
+        <li><b>Nothing partial is ever kept.</b> The upload is written to a
+          temporary file and moved into place only when it is complete, so an
+          interrupted upload leaves nothing you could accidentally sign.</li>
+        <li><b>SHA-256 identifies it.</b> Re-uploading the same bytes reuses the
+          existing copy instead of making a duplicate.</li>
+        <li><b>The image is inspected.</b> The ESP32 header is read and reported
+          &mdash; chip, project name, app version, IDF version. A file that is
+          not an ESP32 image is still stored, but it is flagged.</li>
+        <li><b>No key is touched, and uploads are never downloadable.</b> There
+          is no route that serves a file back out of the uploads folder.</li>
+      </ul>
+    </details>
+  </section>
+
+  <!-- ------------------------------------------------------------ step 2 -->
+  <section class="step">
+    <h2><span class="num">2</span> Make it a secure package</h2>
+
+    <form id="pkg-form">
+      <div class="row">
+        <label>
+          <span>Uploaded file</span>
+          <select id="pkg-source"></select>
+        </label>
+        <label>
+          <span>Firmware version</span>
+          <input type="text" id="pkg-version" placeholder="2.1.0" required>
+        </label>
+        <label>
+          <span>Security version</span>
+          <input type="number" id="pkg-security" min="0" value="1" required>
+        </label>
+      </div>
+      <button class="btn" type="submit" id="btn-package">Create secure package</button>
+      <span class="keys" id="keys-note"></span>
+    </form>
+
+    <div id="pkg-out" class="out"></div>
+
+    <details class="note">
+      <summary>What "secure" means here</summary>
+      <p>
+        Your plaintext <code>.bin</code> is hashed with <b>Ascon-Hash256</b>,
+        encrypted with <b>Ascon-AEAD128</b> under a fresh nonce, and the result
+        is signed with <b>Ed25519</b>. The signing key stays in
+        <code>keys/</code> on this machine and never reaches your browser. The
+        device checks all three before it writes a single byte to flash, and
+        refuses anything older than the security version it is already running.
+      </p>
+    </details>
+  </section>
+
+  <!-- ------------------------------------------------------------ step 3 -->
+  <section class="step">
+    <h2><span class="num">3</span> Send it to your devices</h2>
+    <p class="hint">
+      A new package is <b>staged</b> &mdash; built, but invisible to devices.
+      Publish it when you are ready; the device picks it up on its next check.
+      Publishing copies the signed bytes unchanged.
+    </p>
+    <div class="table-wrap">
+      <table id="pkg-table">
+        <thead>
+          <tr><th>Package</th><th>Version</th><th>Security</th><th>Size</th>
+              <th>Status</th><th></th></tr>
+        </thead>
+        <tbody id="pkg-body">
+          <tr><td colspan="6" class="empty">Loading&hellip;</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- -------------------------------------------------------- file list -->
+  <section class="step">
+    <h2>Uploaded files</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>File</th><th>Size</th><th>SHA-256</th><th>What it is</th>
+              <th>Uploaded</th></tr>
+        </thead>
+        <tbody id="up-body">
+          <tr><td colspan="5" class="empty">Loading&hellip;</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ------------------------------------------------------- how to use -->
+  <section class="step" id="how-to-use">
+    <h2>How to use</h2>
+
+    <h3>First time only</h3>
+    <ol class="guide">
+      <li>
+        <b>Install the Python dependencies.</b> In the ESP-IDF PowerShell, from
+        the project folder:
+        <pre><code>pip install -r server/requirements.txt</code></pre>
+      </li>
+      <li>
+        <b>Create the keys.</b> This writes the Ed25519 pair and the Ascon key
+        into <code>keys/</code>, and the device's copy of the public key into
+        <code>main/crypto_config.h</code>:
+        <pre><code>python tools/generate_keys.py --write-device-config</code></pre>
+        Without this, step 2 on this page cannot sign anything and will say so.
+      </li>
+      <li>
+        <b>Tell the firmware where to find this server.</b> Copy
+        <code>main/device_config.h.example</code> to
+        <code>main/device_config.h</code> and fill in your Wi-Fi name, Wi-Fi
+        password and this PC's LAN IP address.
+      </li>
+      <li>
+        <b>Build and flash the first firmware</b> so the board has something to
+        update <i>from</i>:
+        <pre><code>idf.py set-target esp32
+idf.py build flash monitor</code></pre>
+      </li>
+      <li>
+        <b>Start this server</b> in a second ESP-IDF PowerShell window:
+        <pre><code>python server/app.py</code></pre>
+        Then open <code>http://localhost:8000/</code>.
+      </li>
+    </ol>
+
+    <h3>Every time you want to update a device</h3>
+    <ol class="guide">
+      <li>
+        <b>Build the new firmware.</b> Raise the version in
+        <code>main/app_config.h</code> first &mdash; both the version and, if
+        this update fixes something security-related,
+        <code>SECURITY_VERSION</code>. Then:
+        <pre><code>idf.py build</code></pre>
+        Do <b>not</b> flash it over USB. The new image is
+        <code>build/secure_ota.bin</code>.
+      </li>
+      <li>
+        <b>Upload it</b> in step 1 above. Drag <code>build/secure_ota.bin</code>
+        onto the box, or pick it with the file chooser. The page will tell you
+        what it found inside the image &mdash; check that the app version is the
+        one you just built.
+      </li>
+      <li>
+        <b>Create the package</b> in step 2. Choose the file you just uploaded,
+        type the same version you set in <code>app_config.h</code>, set the
+        security version, and press the button. Every stage is listed as it
+        completes, ending in a self-check that the package verifies.
+      </li>
+      <li>
+        <b>Publish it</b> in step 3. Until you do, the device is offered
+        nothing. After you do, the device downloads it on its next check
+        (within about a minute), verifies it, installs it and reboots.
+      </li>
+      <li>
+        <b>Watch the board.</b> In the window running <code>idf.py monitor</code>
+        you will see the signature, version, decryption and hash checks pass, the
+        install, and the reboot into the new version.
+      </li>
+    </ol>
+
+    <h3>If something goes wrong</h3>
+    <dl class="faq">
+      <dt>"missing ed25519_private.pem" in step 2</dt>
+      <dd>The keys have not been generated. Run
+        <code>python tools/generate_keys.py --write-device-config</code>, then
+        rebuild and re-flash the firmware so the board has the matching public
+        key.</dd>
+
+      <dt>The upload is flagged "not an ESP32 application image"</dt>
+      <dd>The file does not begin with <code>0xE9</code>. You have almost
+        certainly picked the wrong <code>.bin</code> &mdash; use
+        <code>build/secure_ota.bin</code>, not the bootloader or the partition
+        table. The file is kept, but a device would refuse to boot it.</dd>
+
+      <dt>"already exists &mdash; packages are never overwritten"</dt>
+      <dd>That version has been built before. Bump the version number; a signed
+        package is never rewritten in place, because that is exactly what an
+        attacker would want to do.</dd>
+
+      <dt>The device never picks up the update</dt>
+      <dd>Check that the package is <b>published</b> and not just staged, that
+        <code>OTA_SERVER_URL</code> in <code>main/device_config.h</code> points
+        at this PC's LAN IP (not <code>localhost</code>), and that the board and
+        the PC are on the same network.</dd>
+
+      <dt>The device rejects the update</dt>
+      <dd>That is the system working. The serial console names the check that
+        failed: a bad signature, a rollback to an older security version, a
+        failed decryption or a hash mismatch. Nothing was written to flash and
+        the old firmware keeps running.</dd>
+    </dl>
+
+    <p class="footnote">
+      This server holds no cryptographic keys of its own &mdash; it stores and
+      serves bytes. Signing happens in <code>tools/create_ota_package.py</code>
+      on this machine, and every check that matters is repeated on the device.
+      Plain HTTP is for development only.
+    </p>
+  </section>
+
+</main>
+
+<div class="toasts" id="toasts"></div>
+<script src="{{ url_for('dashboard.static', filename='js/site.js') }}"></script>
+</body>
+</html>

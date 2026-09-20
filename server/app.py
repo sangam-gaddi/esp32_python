@@ -22,18 +22,17 @@ value that matters is re-read from the signed package header on the device.
 
 Endpoints:
 
-    GET /                                 human-readable status page
     GET /health                           liveness probe
     GET /api/firmware/latest              metadata for the newest package
     GET /api/firmware/list                metadata for every package
     GET /api/firmware/<version>/package   download a specific package
     GET /api/firmware/latest/package      download the newest package
 
-The management dashboard (server/dashboard/) registers itself on this app at
-import time and adds its own routes under /dashboard, /firmware, /history,
-/security, /logs and /api/... . It does not touch the endpoints above, which are
-the ones the ESP32 uses. If the dashboard fails to load for any reason the OTA
-server still starts and still serves devices.
+The web interface (server/dashboard/) registers itself on this app at import
+time and owns "/" plus its own /api/... routes. It does not touch the endpoints
+above, which are the ones the ESP32 uses. If it fails to load for any reason the
+OTA server still starts and still serves devices, and "/" falls back to a plain
+status page.
 """
 
 from __future__ import annotations
@@ -54,7 +53,14 @@ from sotalib import package  # noqa: E402
 PACKAGES_DIR = ROOT / "server" / "packages"
 CERTS_DIR = ROOT / "server" / "certs"
 
+# The largest ESP32 flash is 16 MB, so no legitimate firmware image is bigger.
+# Werkzeug enforces this before a handler runs, which means an oversized body is
+# refused at the door rather than buffered. Upload handling caps the stream a
+# second time as it is written -- see server/dashboard/uploads.py.
+MAX_UPLOAD_BYTES = 16 * 1024 * 1024
+
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
 
 logging.basicConfig(
     level=logging.INFO,
@@ -78,7 +84,8 @@ try:
     _dashboard.register(app)
     DASHBOARD_ENABLED = True
 except Exception as _exc:  # pragma: no cover - defensive
-    log.warning("dashboard not available (%s); OTA endpoints unaffected", _exc)
+    log.warning("web interface not available (%s); OTA endpoints unaffected",
+                _exc)
 
 
 # --------------------------------------------------------------------------- scan
@@ -247,62 +254,30 @@ def versioned_package(version: str):
     abort(404, description=f"no package for version {version}")
 
 
-@app.route("/")
-def index():
-    valid, invalid = scan_packages()
-    scheme = request.scheme
-    banner = ("" if scheme == "https" else
-              '<p class="warn"><strong>Transport: plain HTTP &mdash; '
-              'development only.</strong> Not secure. The device still enforces '
-              'the Ed25519 signature, the Ascon-AEAD128 tag and the '
-              'Ascon-Hash256 digest on every package, so tampered firmware is '
-              'still rejected &mdash; but the transport itself protects '
-              'nothing.</p>')
+# The web interface owns "/". It is registered by server/dashboard/ above, so a
+# route is only defined here when the interface failed to load -- in which case
+# the device-facing endpoints still work and the page says so.
+if not DASHBOARD_ENABLED:
 
-    rows = "".join(
-        f"<tr><td><code>{e['file']}</code></td><td>{e['firmware_version']}</td>"
-        f"<td>{e['security_version']}</td><td>{e['firmware_size']:,}</td>"
-        f"<td>{e['built']}</td>"
-        f"<td><code>{e['firmware_hash'][:16]}&hellip;</code></td>"
-        f"<td><a href=\"/api/firmware/{e['firmware_version']}/package\">download</a></td></tr>"
-        for e in valid) or (
-        '<tr><td colspan="7"><em>No packages. Build one with '
-        '<code>tools/create_ota_package.py</code>.</em></td></tr>')
-
-    bad = "".join(
-        f"<li><code>{b['file']}</code>: {b['reason']}</li>" for b in invalid)
-    bad_block = (f"<h2>Rejected files</h2><ul>{bad}</ul>" if bad else "")
-
-    dash_link = ('<p class="dash"><a href="/dashboard">Open the Secure OTA '
-                 'Control Center &rarr;</a> &mdash; device status, firmware '
-                 'management, OTA control, security monitor and live logs.</p>'
-                 if DASHBOARD_ENABLED else "")
-
-    return f"""<!doctype html>
+    @app.route("/")
+    def index():
+        valid, invalid = scan_packages()
+        rows = "".join(
+            f"<li><code>{e['file']}</code> &mdash; firmware "
+            f"{e['firmware_version']}, security {e['security_version']}, "
+            f"{e['package_size']:,} bytes</li>" for e in valid) or (
+            "<li><em>No packages yet.</em></li>")
+        return f"""<!doctype html>
 <title>Secure OTA update server</title>
-<style>
-  body {{ font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 60rem;
-         padding: 0 1rem; line-height: 1.5; }}
-  table {{ border-collapse: collapse; width: 100%; }}
-  th, td {{ text-align: left; padding: .4rem .6rem; border-bottom: 1px solid #ddd;
-            font-size: .9rem; }}
-  code {{ font-size: .85rem; }}
-  .warn {{ background: #fff4e5; border-left: 4px solid #e8a33d; padding: .8rem; }}
-  .note {{ color: #555; font-size: .9rem; }}
-  .dash {{ background: #eef6ff; border-left: 4px solid #3b82f6; padding: .8rem; }}
-</style>
+<style>body {{ font-family: system-ui, sans-serif; margin: 2rem auto;
+  max-width: 44rem; padding: 0 1rem; line-height: 1.6; }}</style>
 <h1>Secure OTA update server</h1>
-{dash_link}
-{banner}
-<p class="note">This server holds no cryptographic keys. Packages are signed and
-encrypted on the build host; the server only stores and serves the bytes.</p>
-<h2>Available packages ({len(valid)})</h2>
-<table>
-  <tr><th>File</th><th>Firmware</th><th>Security</th><th>Size</th><th>Built</th>
-      <th>Ascon-Hash256</th><th></th></tr>
-  {rows}
-</table>
-{bad_block}
+<p><strong>The web interface did not load</strong>, so this is the bare server.
+Devices are unaffected &mdash; the update endpoints below are working. Check the
+console for the reason (usually a missing dependency from
+<code>server/requirements.txt</code>).</p>
+<h2>Packages ({len(valid)} valid, {len(invalid)} rejected)</h2>
+<ul>{rows}</ul>
 <h2>API</h2>
 <ul>
   <li><code><a href="/api/firmware/latest">/api/firmware/latest</a></code></li>
@@ -311,6 +286,15 @@ encrypted on the build host; the server only stores and serves the bytes.</p>
   <li><code><a href="/health">/health</a></code></li>
 </ul>
 """
+
+
+@app.errorhandler(413)
+def too_large(err):
+    return jsonify({
+        "error": f"the upload is larger than the "
+                 f"{MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit; no ESP32 "
+                 f"firmware image is that big",
+    }), 413
 
 
 @app.errorhandler(404)
@@ -371,9 +355,9 @@ def main() -> int:
 
     log.info("listening on       : %s://%s:%d", scheme, args.host, port)
     if DASHBOARD_ENABLED:
-        log.info("dashboard          : %s://localhost:%d/dashboard", scheme, port)
+        log.info("open in a browser  : %s://localhost:%d/", scheme, port)
     else:
-        log.warning("dashboard          : NOT LOADED (see the warning above)")
+        log.warning("web interface      : NOT LOADED (see the warning above)")
     if not args.https:
         log.warning("transport          : plain HTTP -- DEVELOPMENT ONLY, not secure")
         log.warning("                     package-level crypto is still fully enforced")
