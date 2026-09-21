@@ -77,8 +77,9 @@
           else. Your original name is kept in the record.</li>
         <li><b>Size is capped as it arrives.</b> Anything over
           {{ max_upload_mb }} MB is refused while the body is still being
-          received, and capped again as it is written; anything under
-          {{ min_upload_bytes }} bytes is thrown away once its size is known.</li>
+          received, and capped again as it is written. There is no lower limit
+          beyond &ldquo;not empty&rdquo; &mdash; a small file is stored and
+          reported for what it is, not turned away.</li>
         <li><b>Nothing partial is ever kept.</b> The upload is written to a
           temporary file and moved into place only when it is complete, so an
           interrupted upload leaves nothing you could accidentally sign.</li>

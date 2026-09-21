@@ -358,11 +358,28 @@ def test_upload_refuses_anything_that_is_not_a_bin(dash):
     assert not list(dash["uploads"].iterdir())
 
 
-def test_upload_enforces_a_size_floor_and_ceiling(dash):
+def test_upload_accepts_a_small_bin_and_says_what_it_is(dash):
+    """"Any .bin" includes a tiny one.
+
+    A file too small to be firmware is stored and reported as not being an
+    ESP32 image. Refusing it would be this layer second-guessing the user about
+    a file it has no authority over -- the device is what decides whether an
+    image boots.
+    """
+    c = dash["client"]
+    r = send(c, b"void setup() {}\nvoid loop() {}\n", "blink.ino.bin")
+    assert r.status_code == 201, r.get_json()
+
+    body = r.get_json()
+    assert body["looks_like_esp32_image"] is False
+    assert (dash["uploads"] / body["file"]).exists()
+
+
+def test_upload_refuses_an_empty_file_and_an_oversized_one(dash):
     from server.dashboard import uploads
 
     c = dash["client"]
-    assert send(c, b"\xe9" * 16, "tiny.bin").status_code == 400
+    assert send(c, b"", "empty.bin").status_code == 400
 
     too_big = uploads.MAX_UPLOAD_BYTES + 1
     r = c.post("/api/firmware/upload",

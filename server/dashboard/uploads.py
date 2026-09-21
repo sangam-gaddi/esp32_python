@@ -15,12 +15,12 @@ WHAT IS ENFORCED HERE
             is re-checked to be a direct child of that directory before anything
             is moved into place.
 
-  size      Refused below MIN_UPLOAD_BYTES (nothing that small is an ESP32
-            image) and above MAX_UPLOAD_BYTES (16 MB, the largest ESP32 flash).
-            The ceiling is enforced twice: Flask's MAX_CONTENT_LENGTH refuses an
-            oversized body as it arrives, and the loop below caps it again as it
-            is written, so a large file is never copied into place. The floor is
-            checked once the size is known.
+  size      Capped at MAX_UPLOAD_BYTES (16 MB, the largest ESP32 flash),
+            enforced twice: Flask's MAX_CONTENT_LENGTH refuses an oversized body
+            as it arrives, and the loop below caps it again as it is written, so
+            a large file is never copied into place. There is no lower bound
+            beyond "not empty" -- any .bin is accepted, and a file too small to
+            be firmware is reported as such rather than refused.
 
   atomicity The upload streams into a `.part` file and is moved into place with
             os.replace() only once it is complete. A half-written file can
@@ -55,9 +55,12 @@ import struct
 import time
 
 # 16 MB is the largest flash an ESP32 variant carries; an app image is always
-# smaller. Below 1 KB there is not even room for the image header.
+# smaller.
 MAX_UPLOAD_BYTES = 16 * 1024 * 1024
-MIN_UPLOAD_BYTES = 1024
+# Any .bin is accepted, so the only size a file can be refused for is none at
+# all. A file too small to be firmware is still stored -- it is reported as not
+# being an ESP32 image, which is the honest answer, rather than turned away.
+MIN_UPLOAD_BYTES = 1
 CHUNK = 64 * 1024
 
 ALLOWED_SUFFIX = ".bin"
@@ -230,9 +233,7 @@ def save_stream(stream, directory: pathlib.Path, raw_name: str) -> dict:
                 fh.write(chunk)
 
         if size < MIN_UPLOAD_BYTES:
-            raise UploadError(
-                "firmware image is only %d bytes; an ESP32 application image "
-                "is never smaller than %d bytes" % (size, MIN_UPLOAD_BYTES))
+            raise UploadError("the file is empty -- there is nothing to store")
 
         dest = _unique_path(directory, name)
         _assert_inside(directory, dest)
