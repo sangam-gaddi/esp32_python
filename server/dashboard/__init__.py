@@ -899,9 +899,12 @@ def api_lab_list():
 
 @bp.route("/api/security/lab/<test_key>", methods=["POST"])
 def api_lab_run(test_key: str):
+    # ?base=published tampers with the real .sota on disk instead of a small
+    # one built for the test. Same keys, same tools, same rejection paths.
+    use_published = request.args.get("base") == "published"
     logbus.push("LAB", "INFO", f"running security test: {test_key}")
     try:
-        result = sectest.run_test(test_key)
+        result = sectest.run_test(test_key, use_published=use_published)
     except sectest.LabError as exc:
         logbus.push("LAB", "ERROR", f"{test_key}: {exc}")
         return jsonify({"error": str(exc)}), 400

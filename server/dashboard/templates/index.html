@@ -15,6 +15,7 @@
     <div class="top-right">
       <span class="status" id="status-chip">checking&hellip;</span>
       <a href="#how-it-works">How it works</a>
+      <a href="#attacks">Attack tests</a>
       <a href="#how-to-use">How to use</a>
     </div>
   </div>
@@ -258,6 +259,47 @@
       server does none of this work and holds no keys &mdash; it stores bytes
       and hands them over.
     </p>
+  </section>
+
+  <!-- ------------------------------------------------------ attack tests -->
+  <section class="step" id="attacks">
+    <h2>Attack tests &mdash; prove it rejects bad firmware</h2>
+
+    <p class="hint">
+      Each test builds a <b>genuinely hostile package</b> with
+      <code>tools/tamper_package.py</code> and then asks
+      <code>tools/verify_package.py</code> to accept it. You see every
+      verification stage and exactly which one catches the attack.
+      <b>PROTECTED</b> means the attack was detected and the update refused.
+      <b>VULNERABLE</b> would mean a tampered package got through &mdash; it
+      never should.
+    </p>
+
+    <div class="lab-controls">
+      <button class="btn" id="lab-run-all">Run all tests</button>
+      <label class="check">
+        <input type="checkbox" id="lab-real">
+        <span>tamper with the real published package (slower, ~1 min each)</span>
+      </label>
+      <span id="lab-note" class="keys"></span>
+    </div>
+
+    <div id="lab-grid" class="lab-grid">
+      <p class="hint">Loading tests&hellip;</p>
+    </div>
+
+    <details class="note">
+      <summary>Is any of this sent to my device?</summary>
+      <p>
+        No. A hostile package is built in a temporary folder, refused by the
+        verifier, and the folder is deleted. It is never written to
+        <code>server/packages/</code>, never published and never offered over
+        the OTA API. What these tests prove is a property of the package
+        format, checked on this PC. The ESP32 runs the same checks in C &mdash;
+        the same sources the host test suite compiles and runs &mdash; and
+        <code>docs/DEMO.md</code> shows the device itself rejecting a package.
+      </p>
+    </details>
   </section>
 
   <!-- ------------------------------------------------------- how to use -->

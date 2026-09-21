@@ -62,6 +62,12 @@ MAX_UPLOAD_BYTES = 16 * 1024 * 1024
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
 
+# Jinja caches templates unless told otherwise, which means an edited page keeps
+# serving the old HTML until the process is restarted. On a development server
+# that is a trap: the stale page pairs with a fresh stylesheet or script and the
+# result looks like a server fault. Python changes still need a restart.
+app.config["TEMPLATES_AUTO_RELOAD"] = True
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",

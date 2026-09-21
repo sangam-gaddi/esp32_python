@@ -98,8 +98,15 @@ def _make_base_package(workdir: pathlib.Path) -> pathlib.Path:
     return out
 
 
-def run_test(test_key: str) -> dict:
-    """Run one lab test end to end. Returns a result dict for the dashboard."""
+def run_test(test_key: str, use_published: bool = False) -> dict:
+    """Run one lab test end to end. Returns a result dict for the dashboard.
+
+    `use_published` tampers with the newest real .sota on disk, which is the
+    more convincing demonstration and takes about a minute for a ~900 KB image.
+    The default builds a small package with the same tools and the same keys:
+    the cryptography and the rejection paths are identical, only the payload is
+    smaller, so nine tests run in seconds instead of ten minutes.
+    """
     if test_key not in TESTS:
         raise LabError(f"unknown test {test_key!r}")
     if not keys_present():
@@ -110,12 +117,13 @@ def run_test(test_key: str) -> dict:
     workdir = pathlib.Path(tempfile.mkdtemp(prefix="sota_lab_"))
 
     try:
-        base = _newest_package()
-        base_note = f"base package: {base.name}" if base else \
-            "base package: generated for the lab (no .sota published yet)"
+        base = _newest_package() if use_published else None
         if base is None:
             base = _make_base_package(workdir)
+            base_note = ("base package: built for this test with the project's "
+                         "own keys and packaging tool")
         else:
+            base_note = f"base package: {base.name} (the real published package)"
             shutil.copy2(base, workdir / base.name)
             base = workdir / base.name
 

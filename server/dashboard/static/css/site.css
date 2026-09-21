@@ -428,6 +428,88 @@ pre code { background: none; padding: 0; }
 .fld.ct { color: var(--ok); flex-grow: 3; }
 .wire-note { margin-top: 8px; font-size: .78rem; color: var(--dim); }
 
+/* -------------------------------------------------------------- attack lab */
+
+.lab-controls {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+.lab-controls .btn { margin-top: 0; }
+
+.check { display: flex; align-items: center; gap: 7px; font-size: .84rem; }
+.check span { color: var(--dim); }
+.check input { accent-color: var(--accent); }
+
+.lab-grid { display: grid; gap: 10px; }
+
+.lab-card {
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+.lab-card.ok { border-left-color: var(--ok); }
+.lab-card.bad { border-left-color: var(--bad); }
+.lab-card.busy { border-left-color: var(--accent); }
+
+.lab-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.lab-name { font-weight: 600; font-size: .92rem; }
+.lab-mode {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: .76rem;
+  color: var(--dim);
+}
+.lab-head .btn { margin: 0 0 0 auto; }
+
+.lab-why { font-size: .84rem; color: var(--dim); margin-top: 4px; }
+.lab-result { font-size: .88rem; margin-top: 10px; }
+.lab-result.ok { color: var(--ok); }
+.lab-result.bad { color: var(--bad); }
+
+.lab-stages { list-style: none; margin: 10px 0 0; padding: 0; }
+.lab-stages li {
+  display: grid;
+  grid-template-columns: 1.6rem auto 3rem 1fr;
+  gap: 10px;
+  align-items: baseline;
+  padding: 3px 0;
+  font-size: .82rem;
+  border-bottom: 1px dashed var(--line);
+}
+.lab-stages li:last-child { border-bottom: 0; }
+.lab-stages .n { color: var(--dim); font-variant-numeric: tabular-nums; }
+.lab-stages .nm { font-weight: 600; }
+.lab-stages .vd { font-weight: 700; font-size: .76rem; letter-spacing: .04em; }
+.lab-stages .vd.pass { color: var(--ok); }
+.lab-stages .vd.fail { color: var(--bad); }
+.lab-stages .dt { color: var(--dim); word-break: break-word; }
+
+.lab-base { font-size: .76rem; color: var(--dim); margin-top: 8px; }
+
+.spin {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border: 2px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin .7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+@media (max-width: 560px) {
+  .lab-stages li { grid-template-columns: 1.4rem 1fr; }
+  .lab-stages .vd, .lab-stages .dt { grid-column: 2; }
+}
+
 /* ------------------------------------------------------------------ toasts */
 
 .toasts {

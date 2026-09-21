@@ -435,6 +435,130 @@
     }).join("");
   }
 
+  /* ---------------------------------------------------------- attack lab
+   *
+   * The server runs the project's real tamper/verify tools and hands back what
+   * they printed. This parses the verifier's stage lines so you can see which
+   * check caught the attack, rather than only a green or red word.
+   */
+
+  var STAGE_RE = /^\s*\[(\d+)\]\s+(.+?)\s{2,}(PASS|FAIL)\s*(.*)$/;
+
+  function parseStages(output) {
+    return String(output || "").split("\n").reduce(function (acc, line) {
+      var m = STAGE_RE.exec(line);
+      if (m) {
+        acc.push({ n: m[1], name: m[2].trim(), verdict: m[3],
+                   detail: m[4].trim() });
+      }
+      return acc;
+    }, []);
+  }
+
+  function labCard(test) {
+    return "<div class=\"lab-card\" id=\"lab-" + esc(test.key) + "\">"
+      + "<div class=\"lab-head\">"
+      + "<span class=\"lab-name\">" + esc(test.label) + "</span>"
+      + "<span class=\"lab-mode\">" + esc(test.mode) + "</span>"
+      + "<span class=\"tag dim\" data-role=\"status\">not run</span>"
+      + "<button class=\"btn small\" data-test=\"" + esc(test.key)
+      + "\">Run</button>"
+      + "</div>"
+      + "<div class=\"lab-why\">should be stopped by: <b>"
+      + esc(test.defended_by) + "</b></div>"
+      + "<div data-role=\"out\"></div>"
+      + "</div>";
+  }
+
+  function renderLabResult(key, result) {
+    var card = $("lab-" + key);
+    if (!card) { return; }
+    var good = result.passed;
+    card.className = "lab-card " + (good ? "ok" : "bad");
+
+    var pill = card.querySelector("[data-role=status]");
+    pill.className = "tag " + (good ? "ok" : "bad");
+    pill.textContent = result.status;
+
+    var stages = parseStages(result.output).map(function (s) {
+      return "<li><span class=\"n\">" + esc(s.n) + "</span>"
+        + "<span class=\"nm\">" + esc(s.name) + "</span>"
+        + "<span class=\"vd " + s.verdict.toLowerCase() + "\">"
+        + esc(s.verdict) + "</span>"
+        + "<span class=\"dt\">" + esc(s.detail) + "</span></li>";
+    }).join("");
+
+    card.querySelector("[data-role=out]").innerHTML =
+      "<div class=\"lab-result " + (good ? "ok" : "bad") + "\">"
+      + esc(result.headline) + "</div>"
+      + (stages ? "<ul class=\"lab-stages\">" + stages + "</ul>" : "")
+      + "<div class=\"lab-base\">" + esc(result.result_line) + " · "
+      + esc(result.base_note) + " · " + esc(result.duration_ms)
+      + " ms</div>";
+  }
+
+  function runLabTest(key) {
+    var card = $("lab-" + key);
+    if (!card) { return Promise.resolve(); }
+    card.className = "lab-card busy";
+    var pill = card.querySelector("[data-role=status]");
+    pill.className = "tag dim";
+    pill.innerHTML = "<span class=\"spin\"></span> running";
+    card.querySelector("[data-role=out]").innerHTML = "";
+
+    var real = $("lab-real") && $("lab-real").checked;
+    return api("/api/security/lab/" + encodeURIComponent(key)
+               + (real ? "?base=published" : ""), { method: "POST" })
+      .then(function (result) { renderLabResult(key, result); })
+      .catch(function (error) {
+        card.className = "lab-card bad";
+        pill.className = "tag bad";
+        pill.textContent = "error";
+        card.querySelector("[data-role=out]").innerHTML =
+          "<div class=\"lab-result bad\">" + esc(error.message) + "</div>";
+      });
+  }
+
+  function loadLab() {
+    if (!$("lab-grid")) { return; }
+    api("/api/security/lab").then(function (data) {
+      $("lab-grid").innerHTML = data.tests.map(labCard).join("");
+      if (!data.keys_present) {
+        $("lab-note").textContent =
+          "keys/ is incomplete -- run: python tools/generate_keys.py";
+        $("lab-run-all").disabled = true;
+      }
+    }).catch(function (error) {
+      $("lab-grid").innerHTML =
+        "<p class=\"hint\">Could not load the tests: " + esc(error.message)
+        + "</p>";
+    });
+
+    $("lab-grid").addEventListener("click", function (event) {
+      var button = event.target.closest("button[data-test]");
+      if (button) { runLabTest(button.getAttribute("data-test")); }
+    });
+
+    $("lab-run-all").addEventListener("click", function () {
+      var buttons = Array.prototype.slice.call(
+        $("lab-grid").querySelectorAll("button[data-test]"));
+      var all = $("lab-run-all");
+      all.disabled = true;
+      all.textContent = "Running…";
+      // Sequential: each test shells out to the packaging tools, and running
+      // nine of those at once would only make every one of them slower.
+      buttons.reduce(function (chain, button) {
+        return chain.then(function () {
+          return runLabTest(button.getAttribute("data-test"));
+        });
+      }, Promise.resolve()).then(function () {
+        all.disabled = false;
+        all.textContent = "Run all tests";
+        toast("All attack tests finished", "ok");
+      });
+    });
+  }
+
   /* -------------------------------------------------------------- refresh */
 
   function refresh(selectFile) {
@@ -516,4 +640,5 @@
 
   refresh();
   refreshStatus();
+  loadLab();
 }());
