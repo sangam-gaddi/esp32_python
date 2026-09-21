@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Secure OTA &mdash; Firmware Upload</title>
-<link rel="stylesheet" href="{{ url_for('dashboard.static', filename='css/site.css') }}">
+<link rel="stylesheet" href="{{ url_for('dashboard.static', filename='css/site.css') }}?v={{ asset_version }}">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#128274;</text></svg>">
 </head>
 <body>
@@ -375,6 +375,6 @@ idf.py build flash monitor</code></pre>
 </main>
 
 <div class="toasts" id="toasts"></div>
-<script src="{{ url_for('dashboard.static', filename='js/site.js') }}"></script>
+<script src="{{ url_for('dashboard.static', filename='js/site.js') }}?v={{ asset_version }}"></script>
 </body>
 </html>

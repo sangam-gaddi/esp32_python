@@ -634,7 +634,27 @@ def _uploads_view() -> list[dict]:
                 "compiled": info["compiled"], "verdict": info["verdict"],
             })
         else:
-            row["verdict"] = "not uploaded through this site -- not inspected"
+            # Copied in by hand, or uploaded before there was a record. Read
+            # the header now rather than shrugging: "not inspected" next to a
+            # file from an entirely different project is how the wrong image
+            # gets signed.
+            try:
+                with open(inventory.UPLOADS_DIR / entry["file"], "rb") as fh:
+                    image = uploads.inspect_image(fh.read(512))
+            except OSError as exc:
+                row["verdict"] = f"unreadable: {exc}"
+                rows.append(row)
+                continue
+            row.update({
+                "sha256": "",
+                "original_name": "",
+                "looks_like_esp32_image": image["magic_ok"],
+                "chip": image["chip"], "app_name": image["app_name"],
+                "app_version": image["app_version"],
+                "idf_version": image["idf_version"],
+                "compiled": image["compiled"], "verdict": image["verdict"],
+                "recorded": False,
+            })
         rows.append(row)
     return rows
 
@@ -940,12 +960,31 @@ def api_logs_stream():
 # One page, one job: get a .bin onto the device safely. `/dashboard` and
 # `/firmware` are kept as aliases so older links and docs still land somewhere.
 
+def _asset_version() -> str:
+    """A token that changes whenever the stylesheet or the script changes.
+
+    Appended to the asset URLs so a browser can never pair a cached script with
+    a newer page. That mismatch is not hypothetical -- it presents as the
+    script failing on elements the old HTML does not contain, which looks like
+    a server fault and is not one.
+    """
+    static = pathlib.Path(__file__).resolve().parent / "static"
+    newest = 0.0
+    for name in ("css/site.css", "js/site.js"):
+        try:
+            newest = max(newest, (static / name).stat().st_mtime)
+        except OSError:
+            pass
+    return str(int(newest))
+
+
 @bp.route("/")
 @bp.route("/dashboard")
 @bp.route("/firmware")
 def page_index():
     return render_template(
         "index.html",
+        asset_version=_asset_version(),
         max_upload_mb=uploads.MAX_UPLOAD_BYTES // (1024 * 1024),
         min_upload_bytes=uploads.MIN_UPLOAD_BYTES)
 

@@ -299,10 +299,18 @@
         + "<td>" + esc(when(row.modified)) + "</td></tr>";
     }).join("");
 
+    // The project name goes in the option text on purpose. Two images of the
+    // same size from different projects look identical by file name, and
+    // signing the wrong one produces a package that installs perfectly and
+    // bricks the device's ability to be updated again.
     var keep = select || $("pkg-source").value;
     $("pkg-source").innerHTML = rows.map(function (row) {
+      var what = row.app_name
+        ? row.app_name + (row.app_version ? " " + row.app_version : "")
+        : (row.looks_like_esp32_image === false ? "not an ESP32 image"
+                                                : "unknown project");
       return "<option value=\"" + esc(row.file) + "\">" + esc(row.file)
-        + " — " + bytes(row.size) + "</option>";
+        + " — " + esc(what) + " — " + bytes(row.size) + "</option>";
     }).join("");
     if (keep) { $("pkg-source").value = keep; }
   }
@@ -324,9 +332,13 @@
       var online = device.status === "ONLINE" || device.status === "REBOOTING";
       chip.className = "status " + (online ? "online" : "offline");
       chip.textContent = device.device_id + " · "
-        + device.status.toLowerCase()
+        + String(device.status || "unknown").toLowerCase()
         + (device.firmware_version ? " · v" + device.firmware_version : "");
     }
+    // The live panel is optional: a browser holding a cached copy of an older
+    // page will not have these elements, and a missing box must not take the
+    // rest of the page down with it.
+    if (!$("live-device")) { return; }
     renderDevice(summary);
     renderProgress(device);
     renderPipeline(summary.pipeline || []);
@@ -449,17 +461,27 @@
   }
 
   function refreshStatus() {
-    api("/api/dashboard/summary").then(function (summary) {
-      renderStatus(summary);
+    api("/api/dashboard/summary").catch(function (error) {
+      // The request itself failed. This is the only case that is honestly
+      // "unreachable" -- a bug in the rendering below is not.
+      $("status-chip").className = "status offline";
+      $("status-chip").textContent = "server unreachable";
+      schedule(8000);
+      throw error;
+    }).then(function (summary) {
+      try {
+        renderStatus(summary);
+      } catch (error) {
+        $("status-chip").className = "status offline";
+        $("status-chip").textContent = "page out of date — press Ctrl+F5";
+        console.error("Secure OTA: cannot render the status panel", error);
+      }
       var device = summary.device;
       var busy = device && device.ota_state && device.ota_state !== "IDLE";
       schedule(busy ? 1500 : 8000);
       // An update that just finished changes what is published.
       if (busy && device.ota_state === "REBOOT") { refresh(); }
-    }).catch(function () {
-      $("status-chip").textContent = "server unreachable";
-      schedule(8000);
-    });
+    }).catch(function () { /* already reported above */ });
   }
 
   /* ----------------------------------------------------------------- wire */
