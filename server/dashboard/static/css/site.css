@@ -309,6 +309,27 @@ pre code { background: none; padding: 0; }
 
 /* -------------------------------------------------------------- live panel */
 
+.fresh {
+  font-size: .72rem;
+  font-weight: 400;
+  color: var(--dim);
+  margin-left: auto;
+}
+.fresh.bad { color: var(--bad); font-weight: 600; }
+
+/* A panel that has stopped updating is dimmed, so stale numbers cannot be
+   mistaken for live ones. */
+.live.stale { opacity: .55; }
+.live.stale .tag { filter: grayscale(1); }
+
+.status-rule {
+  font-size: .8rem;
+  color: var(--dim);
+  margin: 0 0 14px;
+  padding: 8px 11px;
+  border-left: 2px solid var(--line);
+}
+
 .device-line { font-size: .92rem; margin-bottom: 4px; }
 .device-line .muted { color: var(--dim); }
 .device-line b { font-variant-numeric: tabular-nums; }

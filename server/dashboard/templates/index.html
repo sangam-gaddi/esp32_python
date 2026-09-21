@@ -30,9 +30,18 @@
 
   <!-- ------------------------------------------------------- live status -->
   <section class="step live" id="live">
-    <h2>What is happening now</h2>
+    <h2>What is happening now <span id="live-fresh" class="fresh"></span></h2>
 
     <div id="live-device" class="device-line">Waiting for the device&hellip;</div>
+
+    <p class="status-rule">
+      <b>ONLINE</b> means a heartbeat arrived in the last
+      <b id="live-timeout">15</b> seconds &mdash; nothing more. A device that
+      loses power stays ONLINE until that window passes, and if it was
+      installing an update it is shown as REBOOTING for up to two minutes
+      before it counts as offline. The heartbeat age below is the number to
+      trust.
+    </p>
 
     <div id="live-progress" class="progress-wrap">
       <div class="progress-head">

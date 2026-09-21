@@ -339,10 +339,33 @@
     // page will not have these elements, and a missing box must not take the
     // rest of the page down with it.
     if (!$("live-device")) { return; }
+    if ($("live-timeout") && summary.server) {
+      $("live-timeout").textContent = summary.server.heartbeat_timeout_s;
+    }
     renderDevice(summary);
     renderProgress(device);
     renderPipeline(summary.pipeline || []);
     renderEvents(summary.history || []);
+  }
+
+  /* When the last successful poll was. A panel that has stopped updating must
+   * say so: the worst failure this page can have is showing a confident
+   * ONLINE that was true a minute ago and is not true now. */
+  var lastOk = 0;
+
+  function markStale() {
+    if (!lastOk || !$("live")) { return; }
+    var age = Math.round((Date.now() - lastOk) / 1000);
+    var stale = age > 20;
+    $("live").classList.toggle("stale", stale);
+    var note = $("live-fresh");
+    if (note) {
+      note.textContent = stale
+        ? "This page has not reached the server for " + age
+          + "s — everything below is that old, not live."
+        : "updated " + age + "s ago";
+      note.className = "fresh" + (stale ? " bad" : "");
+    }
   }
 
   function renderDevice(summary) {
@@ -594,7 +617,9 @@
       throw error;
     }).then(function (summary) {
       try {
+        lastOk = Date.now();
         renderStatus(summary);
+        markStale();
       } catch (error) {
         $("status-chip").className = "status offline";
         $("status-chip").textContent = "page out of date — press Ctrl+F5";
@@ -641,4 +666,6 @@
   refresh();
   refreshStatus();
   loadLab();
+  // Independent of the poll: if polling itself dies, this is what notices.
+  setInterval(markStale, 1000);
 }());

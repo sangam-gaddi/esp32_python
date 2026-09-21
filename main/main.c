@@ -29,6 +29,7 @@
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "driver/gpio.h"
 #include "nvs_flash.h"
 #include "ota_manager.h"
 #include "version_manager.h"
@@ -92,8 +93,48 @@ static void log_banner(void) {
   ESP_LOGI(TAG, "==========================================================");
 }
 
+/* ---------------------------------------------------------------- the LED --
+ *
+ * A visible answer to "did the update actually land?". The blink period is
+ * derived from FIRMWARE_VERSION_MAJOR, so the board announces which image it
+ * booted without anyone reading a serial log: version 6 blinks slowly, version
+ * 7 twice as fast, and so on. Nothing here participates in the update; it is a
+ * demonstration aid and it is the only thing in this file that touches a pin.
+ */
+#define STATUS_LED_GPIO 2
+
+static void blink_task(void *arg) {
+  (void)arg;
+  gpio_config_t cfg = {
+      .pin_bit_mask = 1ULL << STATUS_LED_GPIO,
+      .mode = GPIO_MODE_OUTPUT,
+      .pull_up_en = GPIO_PULLUP_DISABLE,
+      .pull_down_en = GPIO_PULLDOWN_DISABLE,
+      .intr_type = GPIO_INTR_DISABLE,
+  };
+  ESP_ERROR_CHECK(gpio_config(&cfg));
+
+  /* 1000 ms for v1, 500 ms for v2, ... floored at 100 ms so a high version
+   * number cannot turn the LED into a blur. */
+  uint32_t period = 1000u / (FIRMWARE_VERSION_MAJOR ? FIRMWARE_VERSION_MAJOR : 1);
+  if (period < 100u) period = 100u;
+
+  ESP_LOGI(TAG, "Status LED on GPIO%d: %" PRIu32 " ms period (firmware %s)",
+           STATUS_LED_GPIO, period, FIRMWARE_VERSION_STRING);
+
+  for (;;) {
+    gpio_set_level(STATUS_LED_GPIO, 1);
+    vTaskDelay(pdMS_TO_TICKS(period));
+    gpio_set_level(STATUS_LED_GPIO, 0);
+    vTaskDelay(pdMS_TO_TICKS(period));
+  }
+}
+
 void app_main(void) {
   log_banner();
+
+  /* Started first, so the LED is already blinking while Wi-Fi associates. */
+  xTaskCreate(blink_task, "blink", 2048, NULL, 2, NULL);
 
   /* ---- storage --------------------------------------------------------- */
   esp_err_t err = nvs_flash_init();

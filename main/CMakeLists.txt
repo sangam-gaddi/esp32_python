@@ -18,6 +18,6 @@ idf_component_register(
     REQUIRES ascon ed25519 ota_package
              nvs_flash esp_wifi esp_netif esp_event
              esp_http_client app_update json esp_timer
-             esp_hw_support spi_flash
+             esp_hw_support spi_flash driver
     EMBED_TXTFILES "server_ca_cert.pem"
 )
