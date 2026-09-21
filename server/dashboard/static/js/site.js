@@ -48,7 +48,123 @@
     });
   }
 
-  /* ------------------------------------------------------------ step 1 */
+  /* ------------------------------------------------------- step 1: build
+   *
+   * A build takes a minute or two, far too long to hold a request open, so the
+   * server runs it on a thread and this polls. The version typed here is
+   * written into app_config.h and compiled in, which is what makes it the same
+   * number the device will report after the update.
+   */
+
+  var buildPoll = null;
+
+  function renderBuild(state) {
+    var out = $("build-out");
+    if (!out) { return; }
+
+    if (state.running) {
+      var stages = (state.stages || []).map(function (s) {
+        return "<li class=\"" + (s.ok ? "" : "no") + "\">" + esc(s.label)
+          + "</li>";
+      }).join("");
+      out.innerHTML = "<div class=\"panel\"><b class=\"head\">"
+        + "<span class=\"spin\"></span> Building " + esc(state.version)
+        + "…</b><ul class=\"stages\">" + stages + "</ul>"
+        + "<p class=\"hint\">First build after a version change takes a minute "
+        + "or two. You can leave this page open.</p></div>";
+      return;
+    }
+
+    if (state.ok === null || state.ok === undefined) { return; }
+
+    if (state.ok) {
+      out.innerHTML = "<div class=\"panel ok\"><b class=\"head\">"
+        + "Built firmware " + esc(state.version) + " (security "
+        + esc(state.security_version) + ")</b>"
+        + "<dl class=\"facts\"><dt>Image</dt><dd class=\"mono\">"
+        + esc(state.artifact) + "</dd></dl>"
+        + "<p>It is selected in step 3 below — the version fields are "
+        + "filled in to match what was compiled.</p></div>";
+    } else {
+      out.innerHTML = "<div class=\"panel bad\"><b class=\"head\">"
+        + "Build failed</b>" + esc(state.error || "see the log")
+        + (state.log ? "<pre><code>"
+           + esc(state.log.split("\n").slice(-25).join("\n"))
+           + "</code></pre>" : "") + "</div>";
+    }
+  }
+
+  function pollBuild() {
+    api("/api/firmware/build").then(function (state) {
+      renderBuild(state);
+      if (state.running) { return; }
+
+      clearInterval(buildPoll);
+      buildPoll = null;
+      $("btn-build").disabled = false;
+      $("btn-build").textContent = "Build firmware";
+
+      if (state.ok) {
+        toast("Built " + state.version, "ok");
+        // Carry the numbers forward so the package cannot disagree with the
+        // image: this mismatch is the classic way an update "succeeds" and
+        // then reports the old version.
+        $("pkg-version").value = state.version;
+        $("pkg-security").value = state.security_version;
+        refresh(state.artifact);
+      } else {
+        toast(state.error || "Build failed", "bad");
+      }
+    }).catch(function () { /* transient; the next tick retries */ });
+  }
+
+  function startBuild(event) {
+    event.preventDefault();
+    var button = $("btn-build");
+    button.disabled = true;
+    button.textContent = "Building…";
+
+    api("/api/firmware/build", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        version: $("build-version").value.trim(),
+        security_version: Number($("build-security").value)
+      })
+    }).then(function (state) {
+      renderBuild(state);
+      if (!buildPoll) { buildPoll = setInterval(pollBuild, 2000); }
+    }).catch(function (error) {
+      button.disabled = false;
+      button.textContent = "Build firmware";
+      $("build-out").innerHTML = "<div class=\"panel bad\">"
+        + "<b class=\"head\">Cannot start the build</b>"
+        + esc(error.message) + "</div>";
+      toast(error.message, "bad");
+    });
+  }
+
+  function initBuild() {
+    if (!$("build-form")) { return; }
+    $("build-form").addEventListener("submit", startBuild);
+
+    api("/api/firmware/build").then(function (state) {
+      if (!state.available) {
+        $("build-note").textContent = state.note;
+        $("btn-build").disabled = true;
+        return;
+      }
+      $("build-note").textContent = "";
+      renderBuild(state);
+      if (state.running) {
+        $("btn-build").disabled = true;
+        $("btn-build").textContent = "Building…";
+        buildPoll = setInterval(pollBuild, 2000);
+      }
+    }).catch(function () { /* the page still works without this step */ });
+  }
+
+  /* ------------------------------------------------------- step 2: upload */
 
   var chosen = null;
 
@@ -666,6 +782,7 @@
   refresh();
   refreshStatus();
   loadLab();
+  initBuild();
   // Independent of the poll: if polling itself dies, this is what notices.
   setInterval(markStale, 1000);
 }());

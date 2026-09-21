@@ -311,6 +311,78 @@ def test_packages_are_never_overwritten(dash):
     assert again.status_code == 409
 
 
+# ------------------------------------------------------------------- build
+
+def test_build_writes_the_versions_it_was_given(tmp_path, monkeypatch):
+    """The version typed on the page must end up in the source that is built.
+
+    If these drift, the package declares one version and the image reports
+    another, and an update "succeeds" while leaving the device on the old
+    number.
+    """
+    from server.dashboard import builder
+
+    header = tmp_path / "app_config.h"
+    header.write_text(
+        "#ifndef FIRMWARE_VERSION_MAJOR\n#define FIRMWARE_VERSION_MAJOR 2\n#endif\n"
+        "#ifndef FIRMWARE_VERSION_MINOR\n#define FIRMWARE_VERSION_MINOR 1\n#endif\n"
+        "#ifndef FIRMWARE_VERSION_PATCH\n#define FIRMWARE_VERSION_PATCH 0\n#endif\n"
+        "#ifndef SECURITY_VERSION\n#define SECURITY_VERSION 2\n#endif\n"
+        "#define NVS_KEY_SECURITY_VERSION \"sec_ver\"\n", encoding="utf-8")
+    monkeypatch.setattr(builder, "APP_CONFIG", header)
+
+    builder.write_versions("9.3.1", 11)
+    text = header.read_text(encoding="utf-8")
+    assert "#define FIRMWARE_VERSION_MAJOR 9" in text
+    assert "#define FIRMWARE_VERSION_MINOR 3" in text
+    assert "#define FIRMWARE_VERSION_PATCH 1" in text
+    assert "#define SECURITY_VERSION 11" in text
+    # The guards and unrelated lines survive untouched.
+    assert text.count("#ifndef") == 4
+    assert 'NVS_KEY_SECURITY_VERSION "sec_ver"' in text
+
+
+def test_build_refuses_a_version_it_cannot_write_safely(tmp_path, monkeypatch):
+    from server.dashboard import builder
+
+    header = tmp_path / "app_config.h"
+    monkeypatch.setattr(builder, "APP_CONFIG", header)
+
+    header.write_text("#define FIRMWARE_VERSION_MAJOR 1\n", encoding="utf-8")
+    for bad in ("1.0", "300.0.0", "abc", "", "1.0.0.0"):
+        with pytest.raises(builder.BuildError):
+            builder.write_versions(bad, 1)
+
+    # A header missing a constant is left alone rather than guessed at.
+    before = header.read_text(encoding="utf-8")
+    with pytest.raises(builder.BuildError):
+        builder.write_versions("2.0.0", 2)
+    assert header.read_text(encoding="utf-8") == before
+
+
+def test_build_endpoint_reports_whether_it_can_run(dash):
+    body = dash["client"].get("/api/firmware/build").get_json()
+    assert "available" in body and "running" in body
+    assert isinstance(body["note"], str)
+
+
+def test_build_endpoint_validates_before_touching_anything(dash, monkeypatch):
+    """A bad request must not edit the header or start a subprocess."""
+    from server.dashboard import builder
+
+    def explode(*a, **kw):
+        raise AssertionError("a build must not start for an invalid request")
+
+    monkeypatch.setattr(builder, "_run_build", explode)
+    c = dash["client"]
+    assert c.post("/api/firmware/build",
+                  json={"version": "1.0", "security_version": 1}
+                  ).status_code == 400
+    assert c.post("/api/firmware/build",
+                  json={"version": "1.0.0", "security_version": "nope"}
+                  ).status_code == 400
+
+
 # --------------------------------------------------------- upload security
 
 def send(client, data: bytes, name: str):

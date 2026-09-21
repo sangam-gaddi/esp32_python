@@ -32,6 +32,7 @@ Nothing is invented. When a device has reported no value, the answer is null.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import pathlib
@@ -42,7 +43,7 @@ import time
 from flask import (Blueprint, Response, jsonify, render_template, request,
                    stream_with_context)
 
-from . import db, inventory, logbus, packaging, sectest, uploads
+from . import builder, db, inventory, logbus, packaging, sectest, uploads
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 
@@ -669,6 +670,68 @@ def api_firmware():
         "keys_note": packaging.keys_present()[1],
         "max_upload_bytes": uploads.MAX_UPLOAD_BYTES,
     })
+
+
+@bp.route("/api/firmware/build", methods=["GET"])
+def api_build_state():
+    ok, note = builder.available()
+    state = builder.state()
+    state["available"] = ok
+    state["note"] = note
+    return jsonify(state)
+
+
+def _build_finished(ok: bool, artifact: str, version: str,
+                    security_version: int, seconds: float) -> None:
+    """Record the built image as an upload so step 3 can package it."""
+    if not ok or not artifact:
+        logbus.push("BUILD", "ERROR",
+                    f"build of {version} failed after {seconds:.0f} s")
+        return
+
+    path = inventory.UPLOADS_DIR / artifact
+    try:
+        image = uploads.inspect_image(path.read_bytes()[:512])
+        size = path.stat().st_size
+        sha = hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError as exc:  # pragma: no cover - defensive
+        logbus.push("BUILD", "ERROR", f"built image unreadable: {exc}")
+        return
+
+    db.forget_upload(artifact)
+    db.add_upload(
+        filename=artifact, original_name=f"built on this PC ({version})",
+        size=size, sha256=sha, remote_addr="localhost",
+        image_ok=1 if image["magic_ok"] else 0, chip=image["chip"],
+        app_name=image["app_name"], app_version=image["app_version"],
+        idf_version=image["idf_version"], compiled=image["compiled"],
+        verdict=image["verdict"])
+    logbus.push("BUILD", "INFO",
+                f"built {version} (security {security_version}) in "
+                f"{seconds:.0f} s -> {artifact} ({size} bytes)")
+
+
+@bp.route("/api/firmware/build", methods=["POST"])
+def api_build_start():
+    """Run `idf.py build` on this machine with the versions from the page."""
+    payload = request.get_json(silent=True) or request.form or {}
+    version = str(payload.get("version") or "")
+    security_version = payload.get("security_version")
+
+    try:
+        security_version = packaging.validate_security_version(security_version)
+    except packaging.PackagingError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    try:
+        builder.start(version, security_version, inventory.UPLOADS_DIR,
+                      _build_finished)
+    except builder.BuildError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    logbus.push("BUILD", "INFO",
+                f"building firmware {version} (security {security_version})")
+    return jsonify(builder.state()), 202
 
 
 @bp.route("/api/firmware/upload", methods=["POST"])

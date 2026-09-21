@@ -60,8 +60,55 @@
   </section>
 
   <!-- ------------------------------------------------------------ step 1 -->
+  <section class="step" id="build">
+    <h2><span class="num">1</span> Build the firmware</h2>
+
+    <p class="hint">
+      Runs <code>idf.py build</code> on this PC and writes the version numbers
+      into <code>main/app_config.h</code>, so the source always matches the
+      image. The built <code>.bin</code> is handed straight to step 3 &mdash;
+      you do not need to find it on disk.
+    </p>
+
+    <form id="build-form">
+      <div class="row">
+        <label>
+          <span>Firmware version</span>
+          <input type="text" id="build-version" placeholder="8.0.0" required>
+        </label>
+        <label>
+          <span>Security version</span>
+          <input type="number" id="build-security" min="0" value="8" required>
+        </label>
+      </div>
+      <button class="btn" type="submit" id="btn-build">Build firmware</button>
+      <span class="keys" id="build-note"></span>
+    </form>
+
+    <div id="build-out" class="out"></div>
+
+    <details class="note">
+      <summary>What this changes, and what it does not</summary>
+      <ul>
+        <li><b>It edits two constants</b> in <code>main/app_config.h</code>
+          &mdash; the firmware version and the security version &mdash; and
+          nothing else. If either is not found exactly once, the edit is
+          abandoned rather than guessed at.</li>
+        <li><b>It runs your normal build.</b> No extra flags; the target and
+          configuration come from the project. The same
+          <code>build/secure_ota.bin</code> you would get by hand.</li>
+        <li><b>It signs nothing.</b> Building and signing stay separate steps,
+          so you can look at what was built before authorising it.</li>
+        <li><b>It needs ESP-IDF on this machine.</b> If the toolchain is not
+          found, this step says so and you can upload a
+          <code>.bin</code> in step 2 instead.</li>
+      </ul>
+    </details>
+  </section>
+
+  <!-- ------------------------------------------------------------ step 2 -->
   <section class="step">
-    <h2><span class="num">1</span> Upload your firmware</h2>
+    <h2><span class="num">2</span> Or upload a <code>.bin</code> you already have</h2>
 
     <form id="upload-form">
       <label class="drop" id="drop" for="bin-file">
@@ -105,7 +152,7 @@
 
   <!-- ------------------------------------------------------------ step 2 -->
   <section class="step">
-    <h2><span class="num">2</span> Make it a secure package</h2>
+    <h2><span class="num">3</span> Make it a secure package</h2>
 
     <form id="pkg-form">
       <div class="row">
@@ -143,7 +190,7 @@
 
   <!-- ------------------------------------------------------------ step 3 -->
   <section class="step">
-    <h2><span class="num">3</span> Send it to your devices</h2>
+    <h2><span class="num">4</span> Send it to your devices</h2>
     <p class="hint">
       A new package is <b>staged</b> &mdash; built, but invisible to devices.
       Publish it when you are ready; the device picks it up on its next check.
