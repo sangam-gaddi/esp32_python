@@ -524,6 +524,26 @@ def test_upload_reports_what_the_image_says_about_itself(dash):
     assert facts["idf_version"] == "v5.3.1"
 
 
+def test_source_code_is_named_as_source_not_just_rejected_as_wrong(dash):
+    """Uploading the sketch instead of the build output is the common mistake.
+
+    Saying "not an ESP32 image" leaves someone re-uploading the same file.
+    Saying "this is source code, it has to be compiled" does not.
+    """
+    sketch = (b"#define LED_PIN 2\n"
+              b"void setup() { pinMode(LED_PIN, OUTPUT); }\n"
+              b"void loop() { digitalWrite(LED_PIN, HIGH); delay(500); }\n")
+    body = send(dash["client"], sketch, "blink.ino.bin").get_json()
+
+    assert body["looks_like_esp32_image"] is False
+    assert body["image"]["looks_like_source"] is True
+    assert "compiled" in body["image"]["verdict"]
+
+    # A real image must never be mistaken for source.
+    real = send(dash["client"], image(4096), "app.bin").get_json()
+    assert real["image"]["looks_like_source"] is False
+
+
 def test_a_file_that_is_not_an_esp32_image_is_flagged_but_kept(dash):
     """Any .bin is accepted -- but the site must not pretend it is firmware."""
     c = dash["client"]

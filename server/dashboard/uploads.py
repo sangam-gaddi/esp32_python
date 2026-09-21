@@ -150,6 +150,25 @@ def _cstr(blob: bytes) -> str:
     return blob.split(b"\x00", 1)[0].decode("utf-8", "replace").strip()
 
 
+# Enough C/Arduino punctuation that a paragraph of prose will not match.
+_SOURCE_HINTS = (b"#include", b"#define", b"void ", b"setup()", b"loop()",
+                 b"int ", b"//", b"/*", b"printf", b";")
+
+
+def _looks_like_source(head: bytes) -> bool:
+    """Is this text a human wrote, rather than a compiled image?
+
+    A compiled binary is full of bytes outside the printable range. Source code
+    is not, and it usually carries at least one obvious C marker.
+    """
+    if not head:
+        return False
+    printable = sum(1 for b in head if 32 <= b < 127 or b in (9, 10, 13))
+    if printable / len(head) < 0.95:
+        return False
+    return any(hint in head for hint in _SOURCE_HINTS)
+
+
 def inspect_image(head: bytes) -> dict:
     """Read what an ESP-IDF application image says about itself.
 
@@ -162,7 +181,7 @@ def inspect_image(head: bytes) -> dict:
         "magic_ok": False, "first_byte": "", "chip": "", "chip_id": None,
         "segments": None, "entry_addr": "", "hash_appended": None,
         "app_name": "", "app_version": "", "idf_version": "", "compiled": "",
-        "secure_version": None, "verdict": "",
+        "secure_version": None, "verdict": "", "looks_like_source": False,
     }
     if not head:
         facts["verdict"] = "empty file"
@@ -173,6 +192,16 @@ def inspect_image(head: bytes) -> dict:
         facts["verdict"] = (
             "does not start with 0x%02X, so this is probably not an ESP32 "
             "application image" % ESP_IMAGE_MAGIC)
+        # Distinguish the single most common mistake -- uploading the sketch
+        # instead of the build output -- from a merely wrong binary. Source
+        # code cannot be made into firmware by uploading it; it has to be
+        # compiled, which is what the build step is for.
+        if _looks_like_source(head):
+            facts["looks_like_source"] = True
+            facts["verdict"] = (
+                "this is text, not a compiled binary -- it looks like source "
+                "code (.ino / .c). Source has to be compiled into firmware "
+                "before it can be signed and sent to a device")
         return facts
 
     facts["magic_ok"] = True

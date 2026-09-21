@@ -215,7 +215,14 @@
     if (result.note) {
       extra += "<p>" + esc(result.note) + "</p>";
     }
-    if (!good) {
+    if (image.looks_like_source) {
+      extra += "<p><b>This is your sketch, not your firmware.</b> Source code "
+        + "has to be compiled before it can be signed and sent to a device "
+        + "— uploading it cannot do that. Use "
+        + "<a href=\"#build\">step 1, Build the firmware</a>, which compiles "
+        + "the project on this PC and passes the result straight to step 3. "
+        + "You do not need to find or upload a <code>.bin</code> at all.</p>";
+    } else if (!good) {
       extra += "<p>It was kept so you can package it anyway, but a device "
         + "would refuse to boot it. Check you picked "
         + "<code>build/secure_ota.bin</code>.</p>";

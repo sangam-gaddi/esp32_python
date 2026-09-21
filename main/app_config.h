@@ -28,7 +28,7 @@
  * strictly greater than this.
  */
 #ifndef FIRMWARE_VERSION_MAJOR
-#define FIRMWARE_VERSION_MAJOR 8
+#define FIRMWARE_VERSION_MAJOR 12
 #endif
 #ifndef FIRMWARE_VERSION_MINOR
 #define FIRMWARE_VERSION_MINOR 0
@@ -47,7 +47,7 @@
  * Equal values are allowed, so routine releases need not touch this.
  */
 #ifndef SECURITY_VERSION
-#define SECURITY_VERSION 8
+#define SECURITY_VERSION 12
 #endif
 
 #define FIRMWARE_VERSION_CODE                                     \
@@ -144,6 +144,12 @@
 
 #ifndef WIFI_CONNECT_TIMEOUT_MS
 #define WIFI_CONNECT_TIMEOUT_MS 30000
+#endif
+
+/* How often the system monitor prints uptime, heap and PSRAM to the console.
+ * Purely a demonstration aid; nothing in the update path reads it. */
+#ifndef MONITOR_PERIOD_MS
+#define MONITOR_PERIOD_MS 2000
 #endif
 
 /* =========================================================================
