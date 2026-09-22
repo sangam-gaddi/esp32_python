@@ -612,6 +612,47 @@ def api_device_command_list(device_id: str):
 
 # ------------------------------------------------------------- firmware APIs
 
+def _next_version() -> dict:
+    """The next version number that every device will actually accept.
+
+    A device installs a package only when it is strictly newer than what it is
+    running, and refuses a security version lower than the highest it has ever
+    accepted. Choosing that number by hand is where this goes wrong -- reusing
+    or lowering it produces a package that is perfectly valid and silently
+    ignored, which reads like a broken update rather than a working rule.
+
+    So it is computed instead, from the highest of everything that exists: what
+    each device reports, every package on disk, and what the source is set to.
+    """
+    major = 0
+    security = 0
+
+    for row in db.list_devices():
+        code = row.get("firmware_version_code") or 0
+        major = max(major, code >> 16)
+        security = max(security, row.get("security_version") or 0)
+
+    for pkg in inventory.all_packages():
+        if not pkg.get("valid"):
+            continue
+        major = max(major, (pkg.get("firmware_version_code") or 0) >> 16)
+        security = max(security, pkg.get("security_version") or 0)
+
+    try:
+        text = (ROOT / "main" / "app_config.h").read_text(encoding="utf-8")
+        m = re.search(r"#define\s+FIRMWARE_VERSION_MAJOR\s+(\d+)", text)
+        if m:
+            major = max(major, int(m.group(1)))
+        m = re.search(r"#define\s+SECURITY_VERSION\s+(\d+)", text)
+        if m:
+            security = max(security, int(m.group(1)))
+    except OSError:
+        pass
+
+    return {"version": f"{min(major + 1, 255)}.0.0",
+            "security_version": min(security + 1, 0xFFFFFFFF)}
+
+
 def _uploads_view() -> list[dict]:
     """Files on disk, annotated with what was recorded when they arrived.
 
@@ -669,6 +710,7 @@ def api_firmware():
         "keys_present": packaging.keys_present()[0],
         "keys_note": packaging.keys_present()[1],
         "max_upload_bytes": uploads.MAX_UPLOAD_BYTES,
+        "next": _next_version(),
     })
 
 

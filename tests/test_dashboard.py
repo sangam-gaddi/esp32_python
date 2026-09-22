@@ -311,6 +311,33 @@ def test_packages_are_never_overwritten(dash):
     assert again.status_code == 409
 
 
+def test_the_next_version_is_always_one_a_device_will_accept(dash):
+    """Choosing the version by hand is where updates silently stop working.
+
+    A package numbered at or below what a device already runs is perfectly
+    valid and completely ignored, which looks like a broken update rather than
+    the version rule doing its job. So the page is told what to offer.
+    """
+    c = dash["client"]
+
+    # Nothing anywhere yet: still ahead of the source tree's own version.
+    first = c.get("/api/firmware").get_json()["next"]
+    assert first["version"].endswith(".0.0")
+
+    # A device reporting a high version pushes the suggestion above it.
+    beat(c, firmware_version="40.0.0",
+         firmware_version_code=40 << 16, security_version=41)
+    nxt = c.get("/api/firmware").get_json()["next"]
+    assert nxt["version"] == "41.0.0"
+    assert nxt["security_version"] == 42
+
+    # So does a package on disk, even an unpublished one.
+    dash["add_package"]("60.0.0", 7, published=False)
+    nxt = c.get("/api/firmware").get_json()["next"]
+    assert nxt["version"] == "61.0.0"
+    assert nxt["security_version"] == 42, "security follows the highest seen"
+
+
 # ------------------------------------------------------------------- build
 
 def test_build_writes_the_versions_it_was_given(tmp_path, monkeypatch):

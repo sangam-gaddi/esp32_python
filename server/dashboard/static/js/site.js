@@ -713,12 +713,40 @@
 
   /* -------------------------------------------------------------- refresh */
 
+  /* The version numbers the page suggests. Kept so a field the user has typed
+   * into is left alone, while an untouched one keeps following the server. */
+  var suggested = { version: "", security_version: "" };
+
+  function fillVersion(versionId, securityId, next) {
+    var v = $(versionId);
+    var s = $(securityId);
+    if (!v || !s || !next) { return; }
+    if (v.value === "" || v.value === suggested.version) {
+      v.value = next.version;
+    }
+    if (s.value === "" || String(s.value) === String(suggested.security_version)) {
+      s.value = next.security_version;
+    }
+  }
+
   function refresh(selectFile) {
     return api("/api/firmware").then(function (data) {
       renderUploads(data.uploads || [], selectFile);
       renderPackages(data.packages || []);
       $("keys-note").textContent = data.keys_present ? "" : data.keys_note || "";
       $("btn-package").disabled = !data.keys_present;
+
+      // Offer the next number that every device will actually accept, so a
+      // version is never reused or lowered by accident.
+      fillVersion("build-version", "build-security", data.next);
+      if (data.next) {
+        suggested = data.next;
+        var hint = $("build-next");
+        if (hint) {
+          hint.textContent = "next free version — higher than anything "
+            + "your devices or your packages have used";
+        }
+      }
     }).catch(function (error) {
       toast("Could not read the firmware list: " + error.message, "bad");
     });
