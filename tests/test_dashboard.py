@@ -596,6 +596,83 @@ def test_package_creation_validates_versions(dash):
     assert r.status_code == 400
 
 
+def esp_image(project: str, size: int = 4096) -> bytes:
+    """A .bin whose esp_app_desc names `project`."""
+    import struct
+    blob = bytearray(b"\xe9" + os.urandom(size - 1))
+    struct.pack_into("<H", blob, 12, 0)
+    blob[0x20:0xB0] = bytes(0x90)
+    struct.pack_into("<I", blob, 0x20, 0xABCD5432)
+    blob[0x30:0x35] = b"1.0.0"
+    name = project.encode()[:31]
+    blob[0x50:0x50 + len(name)] = name
+    blob[0x90:0x96] = b"v5.3.1"
+    return bytes(blob)
+
+
+def test_an_image_from_another_project_is_not_signed(dash, monkeypatch):
+    """Signing is the point of no return -- a foreign image must stop here.
+
+    A package built from another project's firmware installs perfectly, because
+    the signature is genuine and every device-side check passes. It then runs
+    without an OTA client, and the device can never be updated again.
+    """
+    import server.dashboard as dashboard
+    monkeypatch.setattr(dashboard, "_project_name", lambda: "secure_ota")
+
+    c = dash["client"]
+    send(c, esp_image("arduino-lib-builder"), "sketch.bin")
+
+    r = c.post("/api/firmware/package",
+               json={"file": "sketch.bin", "version": "3.0.0",
+                     "security_version": 3})
+    assert r.status_code == 409, r.get_json()
+    body = r.get_json()
+    assert "arduino-lib-builder" in body["error"]
+    assert "secure_ota" in body["error"]
+    assert body["hint"]
+
+    # Nothing was signed, staged or published.
+    assert not list(dash["staging"].glob("*.sota"))
+    assert not list(dash["packages"].glob("*.sota"))
+
+
+def test_this_projects_own_image_still_packages(dash, monkeypatch):
+    import server.dashboard as dashboard
+    monkeypatch.setattr(dashboard, "_project_name", lambda: "secure_ota")
+
+    c = dash["client"]
+    send(c, esp_image("secure_ota"), "ours.bin")
+    r = c.post("/api/firmware/package",
+               json={"file": "ours.bin", "version": "3.1.0",
+                     "security_version": 3})
+    assert r.status_code == 201, r.get_json()
+
+
+def test_a_file_that_is_not_an_image_at_all_is_not_signed(dash):
+    c = dash["client"]
+    send(c, b"#define LED 2\nvoid setup(){}\nvoid loop(){}\n", "sketch.bin")
+    r = c.post("/api/firmware/package",
+               json={"file": "sketch.bin", "version": "3.2.0",
+                     "security_version": 3})
+    assert r.status_code == 400
+    assert "not an ESP32 application image" in r.get_json()["error"]
+    assert not list(dash["staging"].glob("*.sota"))
+
+
+def test_the_project_check_can_be_overridden_deliberately(dash, monkeypatch):
+    """The guard protects against a slip, not against a decision."""
+    import server.dashboard as dashboard
+    monkeypatch.setattr(dashboard, "_project_name", lambda: "secure_ota")
+
+    c = dash["client"]
+    send(c, esp_image("something-else"), "other.bin")
+    r = c.post("/api/firmware/package",
+               json={"file": "other.bin", "version": "3.3.0",
+                     "security_version": 3, "force": True})
+    assert r.status_code == 201, r.get_json()
+
+
 def test_unknown_upload_is_not_packaged(dash):
     r = dash["client"].post("/api/firmware/package",
                             json={"file": "nope.bin", "version": "1.0.0",

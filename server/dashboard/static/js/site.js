@@ -41,7 +41,9 @@
       return response.json().catch(function () { return {}; })
         .then(function (body) {
           if (!response.ok) {
-            throw new Error(body.error || ("HTTP " + response.status));
+            var error = new Error(body.error || ("HTTP " + response.status));
+            error.body = body;   // callers may want "why" and "hint"
+            throw error;
           }
           return body;
         });
@@ -323,9 +325,13 @@
         return refresh();
       })
       .catch(function (error) {
+        var body = error.body || {};
         $("pkg-out").innerHTML =
-          "<div class=\"panel bad\"><b class=\"head\">Could not create the "
-          + "package</b>" + esc(error.message) + "</div>";
+          "<div class=\"panel bad\"><b class=\"head\">Refusing to sign this "
+          + "image</b>" + esc(error.message)
+          + (body.why ? "<p>" + esc(body.why) + "</p>" : "")
+          + (body.hint ? "<p><b>" + esc(body.hint) + "</b></p>" : "")
+          + "</div>";
         toast(error.message, "bad");
       })
       .then(function () {

@@ -807,6 +807,75 @@ def api_firmware_upload():
     }), 201
 
 
+def _project_name() -> str:
+    """The project this firmware belongs to, from the last build."""
+    try:
+        desc = json.loads(
+            (ROOT / "build" / "project_description.json").read_text())
+        return str(desc.get("project_name") or "")
+    except (OSError, ValueError):
+        return ""
+
+
+def _foreign_image_refusal(path: pathlib.Path, payload: dict):
+    """None if this image may be signed, otherwise the response refusing it."""
+    if str(payload.get("force") or "").lower() in ("1", "true", "yes"):
+        logbus.push("PKG", "WARNING",
+                    f"signing {path.name} despite the project check (force)")
+        return None
+
+    try:
+        with open(path, "rb") as fh:
+            image = uploads.inspect_image(fh.read(512))
+    except OSError as exc:
+        return jsonify({"error": f"cannot read {path.name}: {exc}"}), 400
+
+    expected = _project_name()
+
+    if not image["magic_ok"]:
+        what = ("This is source code, not compiled firmware."
+                if image.get("looks_like_source")
+                else f"Its first byte is {image['first_byte']}, not 0xE9.")
+        logbus.push("PKG", "WARNING",
+                    f"refused to sign {path.name}: not an ESP32 image")
+        return jsonify({
+            "error": f"{path.name} is not an ESP32 application image. {what} "
+                     f"Signing it would produce a package your device installs "
+                     f"and then fails to boot.",
+            "hint": "Use step 1, Build the firmware, which compiles this "
+                    "project and passes the result straight to this step.",
+            "image": image,
+        }), 400
+
+    if expected and image["app_name"] and image["app_name"] != expected:
+        logbus.push("PKG", "WARNING",
+                    f"refused to sign {path.name}: built from project "
+                    f"{image['app_name']!r}, not {expected!r}")
+        db.add_security_event(
+            "warn", "FOREIGN_IMAGE_REFUSED",
+            f"Refused to sign {path.name}: it is {image['app_name']}, "
+            f"not {expected}",
+            "An image from another project installs correctly and then runs "
+            "without an OTA client, leaving the device unable to be updated "
+            "again. Refused before signing.",
+            "", "server")
+        return jsonify({
+            "error": f"{path.name} was built from the project "
+                     f"'{image['app_name']}', not '{expected}'. Refusing to "
+                     f"sign it.",
+            "why": "It would install correctly -- the signature would be "
+                   "genuine and every check would pass -- and then run without "
+                   "an OTA client. Your device could never be updated over the "
+                   "air again; it would need a USB cable to recover.",
+            "hint": f"Use step 1, Build the firmware, to compile "
+                    f"'{expected}'. To add new code, put it in main/main.c as "
+                    f"a task rather than flashing a separate sketch.",
+            "image": image,
+        }), 409
+
+    return None
+
+
 @bp.route("/api/firmware/package", methods=["POST"])
 def api_firmware_package():
     """Create a signed, encrypted package by running the existing tool."""
@@ -825,6 +894,18 @@ def api_firmware_package():
     firmware_path = inventory.UPLOADS_DIR / source
     if not firmware_path.exists():
         return jsonify({"error": f"no uploaded firmware named {source}"}), 404
+
+    # Refuse to sign an image that is not this project's firmware.
+    #
+    # Signing is the moment a file becomes something a device will install, and
+    # every check downstream will pass because the signature is genuine. An
+    # image from another project installs perfectly and then runs without an
+    # OTA client, so the device can never be updated again -- a brick that only
+    # a USB cable recovers. The signature cannot tell you that; the image
+    # header can, so it is checked here, once, at the point of no return.
+    refusal = _foreign_image_refusal(firmware_path, payload)
+    if refusal is not None:
+        return refusal
 
     out_name = f"firmware_v{version}.sota"
     published = inventory.PACKAGES_DIR / out_name
