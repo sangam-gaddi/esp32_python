@@ -9,6 +9,8 @@
 # fail at run time until you generate a real one.
 idf_component_register(
     SRCS "main.c"
+         "arduino_compat.cpp"
+         "user_code.cpp"
          "ota_manager.c"
          "wifi_manager.c"
          "device_keys.c"

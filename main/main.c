@@ -30,11 +30,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/gpio.h"
-#include "esp_chip_info.h"
-#include "esp_clk_tree.h"
-#include "esp_flash.h"
-#include "esp_heap_caps.h"
-#include "esp_timer.h"
+#include "user_code.h"
 #include "nvs_flash.h"
 #include "ota_manager.h"
 #include "version_manager.h"
@@ -98,64 +94,6 @@ static void log_banner(void) {
   ESP_LOGI(TAG, "==========================================================");
 }
 
-/* ------------------------------------------------------- system monitor ---
- *
- * The chip report and the periodic uptime/heap lines an Arduino sketch would
- * print from setup() and loop(), written against ESP-IDF so they live
- * alongside the OTA client instead of replacing it. A monitor task is the
- * FreeRTOS equivalent of loop(): the OTA state machine, the Wi-Fi stack and
- * the reporting task all keep running while this prints.
- *
- * Reading only -- nothing here touches the update path.
- */
-static const char *MON_TAG = "MONITOR";
-
-static void log_chip_report(void) {
-  esp_chip_info_t chip;
-  esp_chip_info(&chip);
-
-  uint32_t flash_bytes = 0;
-  if (esp_flash_get_size(NULL, &flash_bytes) != ESP_OK) flash_bytes = 0;
-
-  uint32_t cpu_hz = 0;
-  if (esp_clk_tree_src_get_freq_hz(SOC_MOD_CLK_CPU,
-                                   ESP_CLK_TREE_SRC_FREQ_PRECISION_CACHED,
-                                   &cpu_hz) != ESP_OK)
-    cpu_hz = 0;
-
-  const char *model = (chip.model == CHIP_ESP32)    ? "ESP32"
-                      : (chip.model == CHIP_ESP32S2) ? "ESP32-S2"
-                      : (chip.model == CHIP_ESP32S3) ? "ESP32-S3"
-                      : (chip.model == CHIP_ESP32C3) ? "ESP32-C3"
-                                                     : "unknown";
-
-  ESP_LOGI(MON_TAG, "================================");
-  ESP_LOGI(MON_TAG, "       ESP32 SYSTEM MONITOR");
-  ESP_LOGI(MON_TAG, "================================");
-  ESP_LOGI(MON_TAG, "Chip Model    : %s", model);
-  ESP_LOGI(MON_TAG, "Chip Revision : %d", chip.revision);
-  ESP_LOGI(MON_TAG, "CPU Cores     : %d", chip.cores);
-  ESP_LOGI(MON_TAG, "CPU Frequency : %" PRIu32 " MHz", cpu_hz / 1000000);
-  ESP_LOGI(MON_TAG, "Flash Size    : %" PRIu32 " MB", flash_bytes / (1024 * 1024));
-  ESP_LOGI(MON_TAG, "SDK Version   : %s", esp_get_idf_version());
-  ESP_LOGI(MON_TAG, "================================");
-}
-
-static void monitor_task(void *arg) {
-  (void)arg;
-  log_chip_report();
-
-  for (;;) {
-    ESP_LOGI(MON_TAG, "Uptime    : %lld seconds",
-             esp_timer_get_time() / 1000000LL);
-    ESP_LOGI(MON_TAG, "Free Heap : %" PRIu32 " bytes", esp_get_free_heap_size());
-    ESP_LOGI(MON_TAG, "Free PSRAM: %u bytes",
-             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
-    ESP_LOGI(MON_TAG, "--------------------------------");
-    vTaskDelay(pdMS_TO_TICKS(MONITOR_PERIOD_MS));
-  }
-}
-
 /* ---------------------------------------------------------------- the LED --
  *
  * A visible answer to "did the update actually land?". The blink period is
@@ -193,12 +131,33 @@ static void blink_task(void *arg) {
   }
 }
 
+/* --------------------------------------------------------------- your code --
+ *
+ * user_setup() and user_loop() live in main/user_code.cpp and are the Arduino
+ * setup()/loop() pair. They run here as one more task, which is the whole
+ * point: your code runs *beside* the OTA client rather than replacing it, so
+ * the board can always receive the next update.
+ *
+ * Low priority and its own stack, so a mistake in user code -- a tight loop, a
+ * long delay -- slows nothing down and cannot stop an update arriving.
+ */
+static void user_task(void *arg) {
+  (void)arg;
+  user_setup();
+  for (;;) {
+    user_loop();
+    /* A user_loop() with no delay in it would starve the watchdog, so yield
+     * once per pass regardless of what the user wrote. */
+    vTaskDelay(1);
+  }
+}
+
 void app_main(void) {
   log_banner();
 
   /* Started first, so the LED is already blinking while Wi-Fi associates. */
   xTaskCreate(blink_task, "blink", 2048, NULL, 2, NULL);
-  xTaskCreate(monitor_task, "monitor", 3072, NULL, 2, NULL);
+  xTaskCreate(user_task, "user", 4096, NULL, 2, NULL);
 
   /* ---- storage --------------------------------------------------------- */
   esp_err_t err = nvs_flash_init();
