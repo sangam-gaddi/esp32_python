@@ -39,6 +39,7 @@ server/ota.db
 server/ota.db-wal
 server/ota.db-shm
 server/staging/
+server/staging_archive_old_network/
 server/firmware/uploads/
 
 # Python

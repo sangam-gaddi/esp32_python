@@ -47,6 +47,21 @@ static uint32_t s_target_security;
 static char s_target_version_str[16] = "";
 static char s_last_error[160] = "";
 
+/*
+ * Measurement instrumentation. Timings come from esp_timer_get_time() and heap
+ * from esp_get_free_heap_size(), sampled at every stage and after every chunk.
+ * Logged as single "METRICS" lines so a capture script can parse them; nothing
+ * here influences a decision.
+ */
+static int64_t s_cycle_t0;
+static uint32_t s_heap_base;
+static uint32_t s_heap_min;
+
+static void sample_heap(void) {
+  uint32_t h = esp_get_free_heap_size();
+  if (h < s_heap_min) s_heap_min = h;
+}
+
 /* Metadata from the server's JSON hint. Untrusted -- see the header comment. */
 typedef struct {
   uint32_t firmware_version;
@@ -74,12 +89,18 @@ const char *ota_state_name(ota_state_t s) {
 
 static void set_state(ota_state_t next) {
   s_state = next;
+  sample_heap();
   ESP_LOGI(TAG, "state -> %s", ota_state_name(next));
 }
 
 /* Announce a rejection in a form that reads unambiguously in a demo log. */
 static void reject(const char *stage, const char *reason) {
   s_rejections++;
+  sample_heap();
+  ESP_LOGI(TAG, "METRICS reject stage=%s detect_ms=%" PRId64
+                " heap_base=%" PRIu32 " heap_min=%" PRIu32,
+           stage, (esp_timer_get_time() - s_cycle_t0) / 1000, s_heap_base,
+           s_heap_min);
   ESP_LOGE(TAG, "%s", reason);
   ESP_LOGE(TAG, "UPDATE REJECTED at %s -- running firmware is unchanged", stage);
   snprintf(s_last_error, sizeof s_last_error, "%s: %s", stage, reason);
@@ -234,6 +255,9 @@ done:
 
 static void run_update_cycle(void) {
   s_cycles++;
+  s_cycle_t0 = esp_timer_get_time();
+  s_heap_base = esp_get_free_heap_size();
+  s_heap_min = s_heap_base;
   s_progress_done = 0;
   s_progress_total = 0;
 
@@ -269,11 +293,26 @@ static void run_update_cycle(void) {
            ota_pkg_version_str(current.firmware_version, vbuf2, sizeof vbuf2),
            (unsigned)current.security_version);
 
+#if OTA_ALLOW_DOWNGRADE
+  /* Demonstration mode: any version that differs is installed, in either
+   * direction. Announced every cycle so nobody watching the console can
+   * mistake this build for the protected one. */
+  ESP_LOGW(TAG, "ANTI-ROLLBACK IS DISABLED (OTA_ALLOW_DOWNGRADE=1) -- an older "
+                "signed package WILL be installed. Demonstration builds only.");
+  if (hint.firmware_version == current.firmware_version) {
+    ESP_LOGI(TAG, "Already running this version; nothing to do");
+    set_state(OTA_IDLE);
+    return;
+  }
+  if (hint.firmware_version < current.firmware_version)
+    ESP_LOGW(TAG, "This is a DOWNGRADE, and it is being allowed");
+#else
   if (hint.firmware_version <= current.firmware_version) {
     ESP_LOGI(TAG, "Already up to date; nothing to do");
     set_state(OTA_IDLE);
     return;
   }
+#endif
   ESP_LOGI(TAG, "Update available: version %s",
            ota_pkg_version_str(hint.firmware_version, vbuf, sizeof vbuf));
   device_report_ota_event("START", "CHECK", "STARTED",
@@ -371,17 +410,29 @@ static void run_update_cycle(void) {
     goto cleanup;
   }
   ESP_LOGI(TAG, "Signature verification successful (%" PRId64 " us)", sig_us);
+  ESP_LOGI(TAG, "METRICS sig_us=%" PRId64, sig_us);
 
   /* ---- OTA_VERSION_VERIFY -------------------------------------------- */
   set_state(OTA_VERSION_VERIFY);
   ESP_LOGI(TAG, "Checking firmware version and anti-rollback...");
   rc = ota_pkg_check_versions(&hdr, &current);
   if (rc == OTA_PKG_ERR_ROLLBACK) {
+#if OTA_ALLOW_DOWNGRADE
+    /* The check still runs and still reports what it found -- only the
+     * decision changes. A demonstration build must still be able to say
+     * exactly which rule it chose to ignore. */
+    ESP_LOGW(TAG, "Package security version %u is below the accepted floor %u "
+                  "-- ACCEPTING ANYWAY because OTA_ALLOW_DOWNGRADE=1",
+             (unsigned)hdr.security_version,
+             (unsigned)current.security_version);
+    rc = OTA_PKG_OK;
+#else
     ESP_LOGE(TAG, "Package security version %u is below the accepted floor %u",
              (unsigned)hdr.security_version,
              (unsigned)current.security_version);
     reject("VERSION_VERIFY", ota_pkg_strerror(rc));
     goto cleanup;
+#endif
   }
   if (rc != OTA_PKG_OK) {
     reject("VERSION_VERIFY", ota_pkg_strerror(rc));
@@ -430,7 +481,10 @@ static void run_update_cycle(void) {
     goto cleanup;
   }
 
+  int64_t t_begin = esp_timer_get_time();
   esp_err_t err = esp_ota_begin(target, hdr.firmware_size, &ota);
+  t_begin = esp_timer_get_time() - t_begin;
+  ESP_LOGI(TAG, "METRICS ota_begin_ms=%" PRId64, t_begin / 1000);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "esp_ota_begin failed: %s", esp_err_to_name(err));
     reject("INSTALL", "Cannot open the OTA partition for writing");
@@ -449,12 +503,15 @@ static void run_update_cycle(void) {
   uint32_t written = 0;
   uint32_t next_log = OTA_PROGRESS_LOG_INTERVAL;
   int64_t t_start = esp_timer_get_time();
+  int64_t t_net = 0, t_crypto = 0, t_flash = 0, t_mark;
 
   while (received < hdr.ciphertext_size) {
     uint32_t want = hdr.ciphertext_size - received;
     if (want > OTA_DOWNLOAD_CHUNK_SIZE) want = OTA_DOWNLOAD_CHUNK_SIZE;
 
+    t_mark = esp_timer_get_time();
     int n = esp_http_client_read(client, (char *)inbuf, (int)want);
+    t_net += esp_timer_get_time() - t_mark;
     if (n < 0) {
       reject("DOWNLOAD", "Network error while downloading the package");
       goto cleanup;
@@ -469,7 +526,9 @@ static void run_update_cycle(void) {
     }
 
     size_t produced = 0;
+    t_mark = esp_timer_get_time();
     rc = ota_pkg_payload_update(&payload, outbuf, &produced, inbuf, (size_t)n);
+    t_crypto += esp_timer_get_time() - t_mark;
     if (rc != OTA_PKG_OK) {
       reject("DECRYPT", ota_pkg_strerror(rc));
       goto cleanup;
@@ -477,8 +536,11 @@ static void run_update_cycle(void) {
     received += (uint32_t)n;
     s_progress_done = received; /* reporting only */
 
+    sample_heap();
     if (produced) {
+      t_mark = esp_timer_get_time();
       err = esp_ota_write(ota, outbuf, produced);
+      t_flash += esp_timer_get_time() - t_mark;
       if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_ota_write failed: %s", esp_err_to_name(err));
         reject("INSTALL", "Flash write failed");
@@ -505,7 +567,9 @@ static void run_update_cycle(void) {
   ESP_LOGI(TAG, "Finalising Ascon-AEAD128 and comparing Ascon-Hash256...");
 
   size_t tail = 0;
+  t_mark = esp_timer_get_time();
   rc = ota_pkg_payload_final(&payload, outbuf, &tail);
+  t_crypto += esp_timer_get_time() - t_mark;
 
   if (rc == OTA_PKG_ERR_TAG) {
     reject("DECRYPT", ota_pkg_strerror(rc));
@@ -525,7 +589,9 @@ static void run_update_cycle(void) {
   }
 
   if (tail) {
+    t_mark = esp_timer_get_time();
     err = esp_ota_write(ota, outbuf, tail);
+    t_flash += esp_timer_get_time() - t_mark;
     if (err != ESP_OK) {
       ESP_LOGE(TAG, "esp_ota_write failed on the final block: %s",
                esp_err_to_name(err));
@@ -551,7 +617,9 @@ static void run_update_cycle(void) {
   set_state(OTA_INSTALL);
   ESP_LOGI(TAG, "Writing OTA partition...");
 
+  t_mark = esp_timer_get_time();
   err = esp_ota_end(ota);
+  int64_t t_end = esp_timer_get_time() - t_mark;
   ota_open = false; /* esp_ota_end consumes the handle either way */
   if (err != ESP_OK) {
     /* Includes ESP_ERR_OTA_VALIDATE_FAILED: the bytes verified cryptographically
@@ -573,6 +641,19 @@ static void run_update_cycle(void) {
   }
 
   ESP_LOGI(TAG, "OTA update successful");
+  ESP_LOGI(TAG, "METRICS success bytes=%" PRIu32 " fw=%" PRIu32
+                " payload_ms=%" PRId64 " net_ms=%" PRId64
+                " crypto_ms=%" PRId64 " flash_ms=%" PRId64
+                " ota_end_ms=%" PRId64 " cycle_ms=%" PRId64,
+           received, written, dl_us / 1000, t_net / 1000, t_crypto / 1000,
+           t_flash / 1000, t_end / 1000,
+           (esp_timer_get_time() - s_cycle_t0) / 1000);
+  ESP_LOGI(TAG, "METRICS heap heap_base=%" PRIu32 " heap_min=%" PRIu32
+                " heap_peak_used=%" PRIu32 " heap_min_ever=%" PRIu32
+                " ota_stack_free=%u",
+           s_heap_base, s_heap_min, s_heap_base - s_heap_min,
+           esp_get_minimum_free_heap_size(),
+           (unsigned)uxTaskGetStackHighWaterMark(NULL));
   ESP_LOGI(TAG, "  installed version %s (security %u) into '%s'",
            ota_pkg_version_str(hdr.firmware_version, vbuf, sizeof vbuf),
            (unsigned)hdr.security_version, target->label);

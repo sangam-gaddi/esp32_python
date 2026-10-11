@@ -113,11 +113,11 @@
 
     <form id="upload-form">
       <label class="drop" id="drop" for="bin-file">
-        <input type="file" id="bin-file" accept=".bin,application/octet-stream" hidden>
+        <input type="file" id="bin-file" accept=".bin,.ino,application/octet-stream" hidden>
         <span class="drop-icon">&#8681;</span>
-        <span class="drop-main" id="drop-main">Choose a .bin file, or drag one here</span>
+        <span class="drop-main" id="drop-main">Choose a .bin or Arduino .ino file, or drag one here</span>
         <span class="drop-sub">
-          any <code>.bin</code> is accepted &middot; up to {{ max_upload_mb }} MB
+          an Arduino <code>.ino.bin</code> or <code>.ino</code> sends that sketch to the board automatically &middot; up to {{ max_upload_mb }} MB
         </span>
       </label>
       <button class="btn" type="submit" id="btn-upload" disabled>Upload</button>
@@ -217,7 +217,7 @@
       <table>
         <thead>
           <tr><th>File</th><th>Size</th><th>SHA-256</th><th>What it is</th>
-              <th>Uploaded</th></tr>
+              <th>Uploaded</th><th></th></tr>
         </thead>
         <tbody id="up-body">
           <tr><td colspan="5" class="empty">Loading&hellip;</td></tr>

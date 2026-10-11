@@ -28,7 +28,7 @@
  * strictly greater than this.
  */
 #ifndef FIRMWARE_VERSION_MAJOR
-#define FIRMWARE_VERSION_MAJOR 18
+#define FIRMWARE_VERSION_MAJOR 38
 #endif
 #ifndef FIRMWARE_VERSION_MINOR
 #define FIRMWARE_VERSION_MINOR 0
@@ -47,7 +47,7 @@
  * Equal values are allowed, so routine releases need not touch this.
  */
 #ifndef SECURITY_VERSION
-#define SECURITY_VERSION 8
+#define SECURITY_VERSION 38
 #endif
 
 #define FIRMWARE_VERSION_CODE                                     \
@@ -100,6 +100,55 @@
 /* Reboot delay after a successful install, so the log can be read. */
 #ifndef OTA_REBOOT_DELAY_MS
 #define OTA_REBOOT_DELAY_MS 3000
+#endif
+
+/*
+ * ANTI-ROLLBACK POLICY -- read this before changing it.
+ *
+ *   0 (default, SECURE)  The device installs a package only when its firmware
+ *                        version is strictly NEWER, and refuses any package
+ *                        whose security version is below the highest it has
+ *                        already accepted. This is what stops an attacker
+ *                        replaying a genuine older release whose vulnerability
+ *                        is publicly known. It is attack scenario 5 in
+ *                        docs/DEMO.md and objective 5 of the project.
+ *
+ *   1 (DEMONSTRATION)    The device installs any published package whose
+ *                        version DIFFERS from the one it is running, in either
+ *                        direction. This makes it possible to move a board
+ *                        back and forth between releases from the web page,
+ *                        which is convenient when showing the system off.
+ *
+ * Turning this on REMOVES a security property. It does not weaken the
+ * signature check, the AEAD tag or the hash -- unsigned or tampered firmware
+ * is still rejected exactly as before -- but a correctly signed OLD package
+ * will now be accepted, which is precisely the rollback attack.
+ *
+ * The device says which mode it is in, loudly, on every update check, so a
+ * demonstration can never silently claim protection it does not have.
+ */
+#ifndef OTA_ALLOW_DOWNGRADE
+#define OTA_ALLOW_DOWNGRADE 0
+#endif
+
+/* Blink GPIO2 at a rate derived from the firmware version (main.c). Off by
+ * default: GPIO2 is the board LED, and user_code.cpp may want it. */
+#ifndef STATUS_LED_ENABLE
+#define STATUS_LED_ENABLE 0
+#endif
+
+/* Run the on-device crypto microbenchmark (main/crypto_bench.c) once at boot,
+ * before Wi-Fi starts. Measurement builds only. */
+#ifndef OTA_RUN_CRYPTO_BENCHMARK
+#define OTA_RUN_CRYPTO_BENCHMARK 0
+#endif
+
+/* Measurement builds only: pretend the post-update self-test failed, so the
+ * image is never marked valid and the device restarts. With
+ * CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE the bootloader must then return to the
+ * previous firmware. Used to measure recovery from a bad update. */
+#ifndef OTA_SIMULATE_SELFTEST_FAILURE
+#define OTA_SIMULATE_SELFTEST_FAILURE 0
 #endif
 
 /* =========================================================================

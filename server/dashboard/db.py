@@ -270,6 +270,10 @@ def set_published(filename: str, published: bool) -> None:
           (1 if published else 0, time.time() if published else None, filename))
 
 
+def delete_release(filename: str) -> None:
+    _exec("DELETE FROM firmware_releases WHERE filename = ?", (filename,))
+
+
 def get_release(filename: str) -> dict | None:
     return query_one("SELECT * FROM firmware_releases WHERE filename = ?",
                      (filename,))

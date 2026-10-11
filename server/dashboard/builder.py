@@ -55,7 +55,8 @@ STAGES = [
 _lock = threading.Lock()
 _state: dict = {"running": False, "started_at": 0.0, "finished_at": 0.0,
                 "ok": None, "error": "", "log": "", "version": "",
-                "security_version": None, "artifact": "", "stages": []}
+                "security_version": None, "artifact": "", "stages": [],
+                "source": "", "auto": False}
 
 
 class BuildError(Exception):
@@ -207,13 +208,20 @@ def _stages_from(log: str, reached: str | None = None) -> list[dict]:
 
 
 def _run_build(version: str, security_version: int, uploads_dir: pathlib.Path,
-               on_done) -> None:
+               on_done, after=None) -> None:
     started = time.time()
     log = ""
     try:
         cmd = _command()
+        # A server started from Git Bash/MSYS inherits MSYSTEM, and idf.py
+        # refuses to build when it sees it ("MSys/Mingw is no longer
+        # supported"). The build runs in PowerShell, so it does not belong.
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("MSYSTEM", "MSYSTEM_PREFIX", "MSYSTEM_CHOST",
+                            "MSYSTEM_CARCH", "MINGW_PREFIX", "MINGW_CHOST",
+                            "MINGW_PACKAGE_PREFIX")}
         proc = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
-                              timeout=BUILD_TIMEOUT_S)
+                              timeout=BUILD_TIMEOUT_S, env=env)
         log = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
         ok = proc.returncode == 0 and "Project build complete" in log
 
@@ -231,12 +239,28 @@ def _run_build(version: str, security_version: int, uploads_dir: pathlib.Path,
                 # means. Packages are still never overwritten.
                 shutil.copy2(APP_BIN, target)
 
+        stages = _stages_from(log, "done" if ok else None)
+        error = "" if ok else (
+            proc.stderr.strip().splitlines()[-1][:300] if proc.stderr.strip()
+            else "the build did not complete -- see the log below")
+
+        if ok and after is not None:
+            # Keep "running" true while the follow-on steps (sign, publish)
+            # happen, so the page keeps showing progress until the very end.
+            on_done(ok, artifact, version, security_version,
+                    time.time() - started)
+            _set(log=log[-8000:], artifact=artifact, stages=stages)
+            extra, error = after(artifact, version, security_version,
+                                 lambda st: _set(stages=stages + st))
+            stages = stages + extra
+            ok = not error
+            _set(running=False, ok=ok, finished_at=time.time(),
+                 log=log[-8000:], artifact=artifact, stages=stages,
+                 error=error)
+            return
+
         _set(running=False, ok=ok, finished_at=time.time(),
-             log=log[-8000:], artifact=artifact,
-             stages=_stages_from(log, "done" if ok else None),
-             error="" if ok else (
-                 proc.stderr.strip().splitlines()[-1][:300] if proc.stderr.strip()
-                 else "the build did not complete -- see the log below"))
+             log=log[-8000:], artifact=artifact, stages=stages, error=error)
         on_done(ok, artifact, version, security_version, time.time() - started)
     except subprocess.TimeoutExpired:
         _set(running=False, ok=False, finished_at=time.time(),
@@ -250,7 +274,7 @@ def _run_build(version: str, security_version: int, uploads_dir: pathlib.Path,
 
 
 def start(version: str, security_version: int, uploads_dir: pathlib.Path,
-          on_done) -> None:
+          on_done, after=None, note: str = "") -> None:
     """Rewrite the versions and start a build. Raises BuildError if it cannot."""
     with _lock:
         if _state["running"]:
@@ -260,10 +284,11 @@ def start(version: str, security_version: int, uploads_dir: pathlib.Path,
 
     _set(running=True, ok=None, error="", log="", artifact="",
          started_at=time.time(), finished_at=0.0, version=version,
-         security_version=int(security_version), stages=_stages_from(""))
+         security_version=int(security_version), stages=_stages_from(""),
+         source=note, auto=after is not None)
 
     thread = threading.Thread(
         target=_run_build,
-        args=(version, int(security_version), uploads_dir, on_done),
+        args=(version, int(security_version), uploads_dir, on_done, after),
         daemon=True, name="sota-build")
     thread.start()

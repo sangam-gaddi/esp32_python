@@ -43,7 +43,7 @@ import time
 from flask import (Blueprint, Response, jsonify, render_template, request,
                    stream_with_context)
 
-from . import builder, db, inventory, logbus, packaging, sectest, uploads
+from . import builder, db, inventory, logbus, packaging, sectest, sketch, uploads
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 
@@ -753,6 +753,71 @@ def _build_finished(ok: bool, artifact: str, version: str,
                 f"{seconds:.0f} s -> {artifact} ({size} bytes)")
 
 
+def _ship(artifact: str, version: str, security_version: int, progress):
+    """After a sketch build: sign, encrypt and publish, so the board gets it.
+
+    Runs in the build thread. Returns (stages, error); error is "" on success.
+    """
+    stages = []
+
+    def step(label, ok):
+        stages.append({"key": label, "label": label, "ok": ok})
+        progress(stages)
+
+    name = f"firmware_v{version}.sota"
+    staged = inventory.STAGING_DIR / name
+    published = inventory.PACKAGES_DIR / name
+    if staged.exists() or published.exists():
+        step("Signed & encrypted package", False)
+        return stages, f"{name} already exists"
+
+    step("Signing & encrypting (about 40 s)...", False)
+    try:
+        result = packaging.create_package(inventory.UPLOADS_DIR / artifact,
+                                          version, security_version, staged)
+    except packaging.PackagingError as exc:
+        result = {"ok": False, "error": str(exc)}
+    stages.pop()
+    if not result.get("ok"):
+        step("Signed & encrypted package", False)
+        return stages, f"packaging failed: {result.get('error')}"
+    row = inventory.describe(staged, published=False)
+    db.add_release(filename=name, version=version,
+                   version_code=row.get("firmware_version_code"),
+                   security_version=security_version,
+                   firmware_size=row.get("firmware_size"),
+                   package_size=row.get("package_size"),
+                   firmware_hash=row.get("firmware_hash"),
+                   built_at=row.get("build_timestamp"), published=0,
+                   source_bin=artifact, notes="sketch: built, signed, published")
+    step("Signed & encrypted package (self-verified)", True)
+
+    published.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(staged, published)
+    db.set_published(name, True)
+    logbus.push("SERVER", "INFO",
+                f"published {name} -- the board installs it on its next check")
+    step("Published -- the board installs it within a minute", True)
+    return stages, ""
+
+
+def _start_sketch_build(origin: str):
+    """Build the installed sketch with the next free version, then ship it."""
+    nxt = _next_version()
+    builder.start(nxt["version"], nxt["security_version"],
+                  inventory.UPLOADS_DIR, _build_finished, after=_ship,
+                  note=f"sketch from {origin}")
+    logbus.push("BUILD", "INFO",
+                f"building sketch {origin} as {nxt['version']} and sending it "
+                f"to the board")
+    return builder.state()
+
+
+@bp.route("/api/sketch")
+def api_sketch():
+    return jsonify(sketch.current())
+
+
 @bp.route("/api/firmware/build", methods=["POST"])
 def api_build_start():
     """Run `idf.py build` on this machine with the versions from the page."""
@@ -791,6 +856,21 @@ def api_firmware_upload():
     if not f.filename:
         return jsonify({"error": "no file selected"}), 400
 
+    # An Arduino sketch's source: run that code on the board.
+    if f.filename.lower().endswith(".ino"):
+        data = f.stream.read(sketch.MAX_SKETCH_BYTES + 1)
+        try:
+            if len(data) > sketch.MAX_SKETCH_BYTES:
+                raise sketch.SketchError("sketch file is too large")
+            sketch.install_text(data.decode("utf-8", "replace"),
+                                f"uploaded {pathlib.Path(f.filename).name}")
+            state = _start_sketch_build(pathlib.Path(f.filename).name)
+        except (sketch.SketchError, builder.BuildError) as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({"ok": True, "sketch": True,
+                        "sketch_origin": pathlib.Path(f.filename).name,
+                        "build": state}), 202
+
     try:
         stored = uploads.save_stream(f.stream, inventory.UPLOADS_DIR, f.filename)
     except uploads.UploadError as exc:
@@ -805,6 +885,9 @@ def api_firmware_upload():
     previous = db.get_upload_by_sha(stored["sha256"])
     if previous and (inventory.UPLOADS_DIR / previous["filename"]).exists():
         (inventory.UPLOADS_DIR / stored["file"]).unlink(missing_ok=True)
+        shipped = _arduino_bin_to_sketch(f.filename, image)
+        if shipped is not None:
+            return shipped
         logbus.push("SERVER", "INFO",
                     f"upload {f.filename!r} is byte-identical to "
                     f"{previous['filename']}; kept the existing copy")
@@ -840,6 +923,11 @@ def api_firmware_upload():
             f"stored anyway; a device would refuse to boot it.",
             "", "server")
 
+    shipped = _arduino_bin_to_sketch(stored["original_name"] or f.filename,
+                                     image)
+    if shipped is not None:
+        return shipped
+
     return jsonify({
         "ok": True, "duplicate": False, "file": stored["file"],
         "original_name": stored["original_name"], "renamed": stored["renamed"],
@@ -847,6 +935,35 @@ def api_firmware_upload():
         "image": image,
         "looks_like_esp32_image": image["magic_ok"],
     }), 201
+
+
+def _arduino_bin_to_sketch(filename: str, image: dict):
+    """An Arduino IDE .bin: fetch its sketch and send THAT code to the board.
+
+    The .bin itself is never signed -- it has no OTA client and would leave
+    the board unreachable. Returns a response, or None if this is not an
+    Arduino image (the normal upload path continues).
+    """
+    if (image.get("app_name") or "") != "arduino-lib-builder":
+        return None
+    name = sketch.sketch_name(filename)
+    src = sketch.find_source(name) if name else None
+    if src is None:
+        return jsonify({
+            "error": f"{filename} is an Arduino IDE firmware. It cannot be "
+                     f"sent as it is (it has no OTA client), and its sketch "
+                     f"source could not be found on this PC. Upload the .ino "
+                     f"file instead.",
+            "arduino": True}), 409
+    try:
+        sketch.install_file(src)
+        state = _start_sketch_build(str(src))
+    except (sketch.SketchError, builder.BuildError, OSError) as exc:
+        return jsonify({"error": str(exc), "arduino": True}), 409
+    logbus.push("SERVER", "INFO",
+                f"{filename} is an Arduino build; using its sketch {src}")
+    return jsonify({"ok": True, "sketch": True, "sketch_origin": str(src),
+                    "build": state}), 202
 
 
 def _project_name() -> str:
@@ -1015,6 +1132,28 @@ def api_firmware_publish(name: str):
         return jsonify({"error": f"refusing to publish an unparsable package: "
                                  f"{row['error']}"}), 400
 
+    # A package that is not newer than what a device runs is either ignored
+    # (nothing happens, which looks like a broken update) or, on a build with
+    # OTA_ALLOW_DOWNGRADE=1, installs an OLD image -- one that may have been
+    # built with Wi-Fi and server settings that no longer work, leaving the
+    # device unreachable. Either way it is never what was meant by accident,
+    # so it takes an explicit force=true.
+    payload = request.get_json(silent=True) or {}
+    if not payload.get("force"):
+        code = row.get("firmware_version_code") or 0
+        newer = [d for d in db.list_devices()
+                 if (d.get("firmware_version_code") or 0) >= code]
+        if newer:
+            d = newer[0]
+            return jsonify({
+                "error": f"{name} is version {row['firmware_version']}, but "
+                         f"device {d['device_id']} already runs "
+                         f"{d.get('firmware_version')}. Publishing it would "
+                         f"either do nothing, or downgrade the device to an "
+                         f"old image that may have stale Wi-Fi/server "
+                         f"settings. Build a newer version instead.",
+                "needs_force": True}), 409
+
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dst)
     if dst.stat().st_size != src.stat().st_size:
@@ -1056,6 +1195,49 @@ def api_firmware_unpublish(name: str):
     db.set_published(name, False)
     logbus.push("SERVER", "WARNING",
                 f"unpublished {name} -- devices are no longer offered it")
+    return jsonify({"ok": True})
+
+
+@bp.route("/api/firmware/<path:name>/delete", methods=["POST"])
+def api_firmware_delete(name: str):
+    """Delete a package for good: withdrawn from devices, removed from
+    staging, and its release record dropped. Cannot be undone, which is why
+    the page asks first."""
+    try:
+        name = packaging.safe_filename(name if name.endswith(".sota")
+                                       else f"firmware_v{name}.sota")
+    except packaging.PackagingError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    published = inventory.PACKAGES_DIR / name
+    staged = inventory.STAGING_DIR / name
+    if not published.exists() and not staged.exists():
+        return jsonify({"error": f"no package named {name}"}), 404
+
+    was_published = published.exists()
+    published.unlink(missing_ok=True)
+    staged.unlink(missing_ok=True)
+    db.delete_release(name)
+    logbus.push("SERVER", "WARNING",
+                f"deleted {name}" + (" (it was published; devices are no "
+                                     "longer offered it)" if was_published
+                                     else ""))
+    return jsonify({"ok": True, "was_published": was_published})
+
+
+@bp.route("/api/uploads/<path:name>/delete", methods=["POST"])
+def api_upload_delete(name: str):
+    """Delete an uploaded .bin. Packages already made from it are unaffected."""
+    try:
+        name = packaging.safe_filename(name)
+    except packaging.PackagingError as exc:
+        return jsonify({"error": str(exc)}), 400
+    path = inventory.UPLOADS_DIR / name
+    if path.suffix.lower() != ".bin" or not path.is_file():
+        return jsonify({"error": f"no uploaded firmware named {name}"}), 404
+    path.unlink()
+    db.forget_upload(name)
+    logbus.push("SERVER", "INFO", f"deleted uploaded firmware {name}")
     return jsonify({"ok": True})
 
 

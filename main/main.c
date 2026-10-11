@@ -31,6 +31,7 @@
 #include "freertos/task.h"
 #include "driver/gpio.h"
 #include "user_code.h"
+#include "crypto_bench.h"
 #include "nvs_flash.h"
 #include "ota_manager.h"
 #include "version_manager.h"
@@ -61,6 +62,12 @@ static void confirm_image_is_good(void) {
   }
 
   ESP_LOGI(TAG, "This image is on probation (PENDING_VERIFY) after an update");
+#if OTA_SIMULATE_SELFTEST_FAILURE
+  ESP_LOGE(TAG, "SELFTEST FAILED (simulated, OTA_SIMULATE_SELFTEST_FAILURE=1); "
+                "not marking valid, restarting so the bootloader rolls back");
+  vTaskDelay(pdMS_TO_TICKS(2000));
+  esp_restart();
+#endif
   if (wifi_manager_is_connected()) {
     if (esp_ota_mark_app_valid_cancel_rollback() == ESP_OK)
       ESP_LOGI(TAG, "Self-test passed -- image marked valid, rollback "
@@ -68,9 +75,14 @@ static void confirm_image_is_good(void) {
     else
       ESP_LOGE(TAG, "Failed to mark the image valid");
   } else {
-    ESP_LOGE(TAG, "Wi-Fi did not come up; NOT marking this image valid.");
-    ESP_LOGE(TAG, "The bootloader will roll back to the previous firmware on "
-                  "the next restart.");
+    /* An image that cannot reach the network can never receive the fix, so
+     * waiting for someone to power-cycle it is not recovery. Roll back now:
+     * this marks the image invalid and restarts into the previous one. */
+    ESP_LOGE(TAG, "Wi-Fi did not come up; this image is NOT valid.");
+    ESP_LOGE(TAG, "Rolling back to the previous firmware now.");
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    esp_ota_mark_app_invalid_rollback_and_reboot();
+    ESP_LOGE(TAG, "Rollback failed: no previous valid firmware to return to");
   }
 }
 
@@ -155,8 +167,14 @@ static void user_task(void *arg) {
 void app_main(void) {
   log_banner();
 
-  /* Started first, so the LED is already blinking while Wi-Fi associates. */
+  /* The version-indicator blink shares GPIO2 with the user's code. It is off
+   * by default so the LED belongs to user_code.cpp; set STATUS_LED_ENABLE 1
+   * in app_config.h to bring it back. */
+#if STATUS_LED_ENABLE
   xTaskCreate(blink_task, "blink", 2048, NULL, 2, NULL);
+#else
+  (void)blink_task;
+#endif
   xTaskCreate(user_task, "user", 4096, NULL, 2, NULL);
 
   /* ---- storage --------------------------------------------------------- */
@@ -177,6 +195,10 @@ void app_main(void) {
 
   version_manager_init();
   version_manager_log_status();
+
+#if OTA_RUN_CRYPTO_BENCHMARK
+  crypto_bench_run();
+#endif
 
   /* ---- network --------------------------------------------------------- */
   ESP_ERROR_CHECK(wifi_manager_init());

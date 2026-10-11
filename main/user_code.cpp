@@ -1,6 +1,11 @@
 /* =========================================================================
  *
- *   PUT YOUR CODE HERE.  This is the only file you need to edit.
+ *   YOUR CODE.
+ *
+ *   The website puts your Arduino sketch in main/user_sketch/sketch.ino and
+ *   THAT is what runs: upload your Arduino .bin (or the .ino) on the website
+ *   and it is built, signed and published for you. The fallback code below
+ *   runs only when there is no sketch file.
  *
  *   Paste your Arduino sketch into the two functions below:
  *
@@ -29,55 +34,42 @@
  * ========================================================================= */
 
 #include "arduino_compat.h"
+#include "esp_log.h"
 #include "user_code.h"
 
-/* ------------------------------------------------------------------------- */
+#ifdef USER_SKETCH_PATH
+/* ---------------------------------------------------------------------------
+ * Your Arduino sketch, compiled straight from the file named in
+ * main/CMakeLists.txt (USER_SKETCH). Edit it in the Arduino IDE, then press
+ * "Build firmware" on the website -- no copying into this file.
+ * ------------------------------------------------------------------------- */
+#define setup user_sketch_setup
+#define loop user_sketch_loop
+#include USER_SKETCH_PATH
+#undef setup
+#undef loop
 
 void user_setup(void) {
-  Serial.begin(115200);
-  delay(1000);
-
-  Serial.println();
-  Serial.println("================================");
-  Serial.println("       ESP32 SYSTEM MONITOR");
-  Serial.println("================================");
-
-  Serial.print("Chip Model: ");
-  Serial.println(ESP.getChipModel());
-
-  Serial.print("Chip Revision: ");
-  Serial.println(ESP.getChipRevision());
-
-  Serial.print("CPU Frequency: ");
-  Serial.print(ESP.getCpuFreqMHz());
-  Serial.println(" MHz");
-
-  Serial.print("Flash Size: ");
-  Serial.print(ESP.getFlashChipSize() / (1024 * 1024));
-  Serial.println(" MB");
-
-  Serial.print("SDK Version: ");
-  Serial.println(ESP.getSdkVersion());
-
-  Serial.println("================================");
+  ESP_LOGI("USER", "Running sketch %s", USER_SKETCH_PATH);
+  user_sketch_setup();
 }
 
-/* ------------------------------------------------------------------------- */
+void user_loop(void) { user_sketch_loop(); }
+
+#else
+/* No sketch file found: the code below runs instead. */
+
+#define LED_PIN 2  // Common inbuilt LED pin on ESP32
+
+void user_setup(void) {
+  pinMode(LED_PIN, OUTPUT);
+}
 
 void user_loop(void) {
-  Serial.print("Uptime: ");
-  Serial.print(millis() / 1000);
-  Serial.println(" seconds");
+  digitalWrite(LED_PIN, HIGH);  // LED ON
+  delay(1000);                  // Wait 1 second
 
-  Serial.print("Free Heap: ");
-  Serial.print(ESP.getFreeHeap());
-  Serial.println(" bytes");
-
-  Serial.print("Free PSRAM: ");
-  Serial.print(ESP.getFreePsram());
-  Serial.println(" bytes");
-
-  Serial.println("--------------------------------");
-
-  delay(2000);
+  digitalWrite(LED_PIN, LOW);   // LED OFF
+  delay(1000);                  // Wait 1 second
 }
+#endif

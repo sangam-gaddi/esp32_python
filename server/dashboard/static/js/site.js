@@ -10,6 +10,10 @@
 
   var $ = function (id) { return document.getElementById(id); };
 
+  /* The firmware version code the device reports, so the package list can say
+   * which rows the device would ignore. Null until the first status poll. */
+  var deviceCode = null;
+
   function esc(value) {
     return String(value === null || value === undefined ? "" : value)
       .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
@@ -71,6 +75,7 @@
       }).join("");
       out.innerHTML = "<div class=\"panel\"><b class=\"head\">"
         + "<span class=\"spin\"></span> Building " + esc(state.version)
+        + (state.source ? " — " + esc(state.source) : "")
         + "…</b><ul class=\"stages\">" + stages + "</ul>"
         + "<p class=\"hint\">First build after a version change takes a minute "
         + "or two. You can leave this page open.</p></div>";
@@ -79,7 +84,15 @@
 
     if (state.ok === null || state.ok === undefined) { return; }
 
-    if (state.ok) {
+    if (state.ok && state.auto) {
+      out.innerHTML = "<div class=\"panel ok\"><b class=\"head\">"
+        + "Sent to the board: firmware " + esc(state.version) + "</b>"
+        + "<ul class=\"stages\">" + (state.stages || []).map(function (s) {
+            return "<li>" + esc(s.label) + "</li>"; }).join("") + "</ul>"
+        + "<p>" + esc(state.source || "Done") + ". Watch “What is happening now” at "
+        + "the top: the board downloads, verifies and reboots into it within "
+        + "a minute.</p></div>";
+    } else if (state.ok) {
       out.innerHTML = "<div class=\"panel ok\"><b class=\"head\">"
         + "Built firmware " + esc(state.version) + " (security "
         + esc(state.security_version) + ")</b>"
@@ -106,7 +119,10 @@
       $("btn-build").disabled = false;
       $("btn-build").textContent = "Build firmware";
 
-      if (state.ok) {
+      if (state.ok && state.auto) {
+        toast("Published " + state.version + " — the board will update", "ok");
+        refresh();
+      } else if (state.ok) {
         toast("Built " + state.version, "ok");
         // Carry the numbers forward so the package cannot disagree with the
         // image: this mismatch is the classic way an update "succeeds" and
@@ -158,6 +174,12 @@
       }
       $("build-note").textContent = "";
       renderBuild(state);
+      // A finished build is what step 3 is about to package; show its numbers
+      // even after a page reload.
+      if (state.ok && state.artifact && $("pkg-version")) {
+        $("pkg-version").value = state.version;
+        $("pkg-security").value = state.security_version;
+      }
       if (state.running) {
         $("btn-build").disabled = true;
         $("btn-build").textContent = "Building…";
@@ -251,6 +273,24 @@
 
     api("/api/firmware/upload", { method: "POST", body: data })
       .then(function (result) {
+        if (result.sketch) {
+          // An Arduino sketch: the server is building it into the OTA
+          // firmware and will sign and publish it. Follow that in step 1.
+          $("upload-out").innerHTML = "<div class=\"panel ok\"><b class=\"head\">"
+            + "Your Arduino code is on its way to the board</b>"
+            + "<p>Using the sketch <span class=\"mono\">"
+            + esc(result.sketch_origin) + "</span>. It is being built into the "
+            + "OTA firmware, signed and published — progress is shown in "
+            + "step 1 above. Nothing else to click.</p></div>";
+          toast("Building your sketch and sending it to the board", "ok");
+          renderBuild(result.build || {});
+          $("btn-build").disabled = true;
+          $("btn-build").textContent = "Building…";
+          if (!buildPoll) { buildPoll = setInterval(pollBuild, 2000); }
+          var out = $("build-out");
+          if (out && out.scrollIntoView) { out.scrollIntoView({ block: "center" }); }
+          return refresh();
+        }
         renderUpload(result);
         toast(result.duplicate ? "Already had those bytes" : "Upload accepted",
               "ok");
@@ -342,8 +382,10 @@
 
   /* ------------------------------------------------------------ step 3 */
 
-  function act(path, label) {
-    api(path, { method: "POST" })
+  function act(path, label, body) {
+    api(path, { method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(body || {}) })
       .then(function () { toast(label, "ok"); return refresh(); })
       .catch(function (error) { toast(error.message, "bad"); });
   }
@@ -355,9 +397,27 @@
     var button = event.target.closest("button[data-act]");
     if (!button) { return; }
     var name = button.getAttribute("data-file");
-    if (button.getAttribute("data-act") === "publish") {
+    var what = button.getAttribute("data-act");
+    if (what === "publish") {
       act("/api/firmware/" + encodeURIComponent(name) + "/publish",
           name + " is now offered to devices");
+    } else if (what === "force-publish") {
+      if (!window.confirm(name + " is not newer than the firmware your device "
+          + "runs.\n\nIt will either be ignored, or (with downgrade allowed) "
+          + "install an OLD image that may have outdated Wi-Fi/server "
+          + "settings and leave the device unreachable.\n\nPublish anyway?")) {
+        return;
+      }
+      act("/api/firmware/" + encodeURIComponent(name) + "/publish",
+          name + " is now offered to devices", { force: true });
+    } else if (what === "delete") {
+      if (!window.confirm("Delete " + name + " permanently?\n\nIt is "
+          + "withdrawn from devices and removed from disk. This cannot be "
+          + "undone.")) {
+        return;
+      }
+      act("/api/firmware/" + encodeURIComponent(name) + "/delete",
+          name + " deleted");
     } else {
       act("/api/firmware/" + encodeURIComponent(name) + "/unpublish",
           name + " withdrawn");
@@ -374,9 +434,24 @@
 
     $("pkg-body").innerHTML = packages.map(function (row) {
       var status, action;
+
+      // A package at or below what the device already runs cannot install --
+      // the device only accepts something strictly newer. Publishing it looks
+      // like it worked and then nothing happens, which is the single most
+      // confusing thing this page can do. So it is said plainly instead.
+      var stale = deviceCode !== null && row.valid &&
+        (row.firmware_version_code || 0) <= deviceCode;
+
       if (!row.valid) {
         status = "<span class=\"tag bad\">unreadable</span>";
         action = "";
+      } else if (stale && !row.published) {
+        status = "<span class=\"tag dim\" title=\"Your device runs a newer "
+          + "version, so it would ignore this\">older than device</span>";
+        action = "<button class=\"btn small quiet\" data-act=\"force-publish\" "
+          + "data-file=\"" + esc(row.file) + "\" title=\"The device will "
+          + "ignore this — build a newer version instead\">Publish "
+          + "anyway</button>";
       } else if (row.published) {
         status = "<span class=\"tag ok\">published</span>";
         action = "<button class=\"btn small quiet\" data-act=\"unpublish\" "
@@ -393,7 +468,9 @@
                        ? "—" : row.security_version) + "</td>"
         + "<td>" + bytes(row.package_size) + "</td>"
         + "<td>" + status + "</td>"
-        + "<td>" + action + "</td></tr>";
+        + "<td>" + action + " <button class=\"btn small quiet\" "
+        + "data-act=\"delete\" data-file=\"" + esc(row.file) + "\" "
+        + "title=\"Delete this package permanently\">Delete</button></td></tr>";
     }).join("");
   }
 
@@ -402,7 +479,7 @@
   function renderUploads(rows, select) {
     if (!rows.length) {
       $("up-body").innerHTML =
-        "<tr><td colspan=\"5\" class=\"empty\">Nothing uploaded yet.</td></tr>";
+        "<tr><td colspan=\"6\" class=\"empty\">Nothing uploaded yet.</td></tr>";
       $("pkg-source").innerHTML =
         "<option value=\"\">upload a .bin first</option>";
       return;
@@ -425,7 +502,9 @@
         + "<td class=\"mono\">" + esc((row.sha256 || "—").slice(0, 16))
         + (row.sha256 ? "…" : "") + "</td>"
         + "<td>" + what + "</td>"
-        + "<td>" + esc(when(row.modified)) + "</td></tr>";
+        + "<td>" + esc(when(row.modified)) + "</td>"
+        + "<td><button class=\"btn small quiet\" data-act=\"delete-upload\" "
+        + "data-file=\"" + esc(row.file) + "\">Delete</button></td></tr>";
     }).join("");
 
     // The project name goes in the option text on purpose. Two images of the
@@ -443,6 +522,18 @@
     }).join("");
     if (keep) { $("pkg-source").value = keep; }
   }
+
+  $("up-body").addEventListener("click", function (event) {
+    var button = event.target.closest("button[data-act=delete-upload]");
+    if (!button) { return; }
+    var name = button.getAttribute("data-file");
+    if (!window.confirm("Delete the uploaded file " + name + "?\n\nPackages "
+        + "already made from it are not affected.")) {
+      return;
+    }
+    act("/api/uploads/" + encodeURIComponent(name) + "/delete",
+        name + " deleted");
+  });
 
   /* ------------------------------------------------- what is happening now
    *
@@ -467,6 +558,14 @@
     // The live panel is optional: a browser holding a cached copy of an older
     // page will not have these elements, and a missing box must not take the
     // rest of the page down with it.
+    // A change here changes which packages the device would ignore, so the
+    // package list is redrawn to match.
+    var code = device ? (device.firmware_version_code || 0) : null;
+    if (code !== deviceCode) {
+      deviceCode = code;
+      refresh();
+    }
+
     if (!$("live-device")) { return; }
     if ($("live-timeout") && summary.server) {
       $("live-timeout").textContent = summary.server.heartbeat_timeout_s;
@@ -717,14 +816,28 @@
    * into is left alone, while an untouched one keeps following the server. */
   var suggested = { version: "", security_version: "" };
 
-  function fillVersion(versionId, securityId, next) {
+  function fillVersion(versionId, securityId, next, onlyDefaults) {
     var v = $(versionId);
     var s = $(securityId);
     if (!v || !s || !next) { return; }
-    if (v.value === "" || v.value === suggested.version) {
+    if (onlyDefaults) {
+      // Step 3 describes an image that already exists: once the build has
+      // handed over its version, that is the only correct number, so only
+      // the untouched HTML placeholder is ever replaced here.
+      if (v.value === "" || v.value === v.defaultValue) { v.value = next.version; }
+      if (s.value === "" || s.value === s.defaultValue) { s.value = next.security_version; }
+      return;
+    }
+    // Replace anything the user has not typed themselves: an empty box, the
+    // placeholder the HTML ships with, or the previous suggestion. A security
+    // version below the device's floor builds a package the device rejects as
+    // a rollback, so a stale default here is never harmless.
+    if (v.value === "" || v.value === v.defaultValue ||
+        v.value === suggested.version) {
       v.value = next.version;
     }
-    if (s.value === "" || String(s.value) === String(suggested.security_version)) {
+    if (s.value === "" || s.value === s.defaultValue ||
+        String(s.value) === String(suggested.security_version)) {
       s.value = next.security_version;
     }
   }
@@ -739,6 +852,7 @@
       // Offer the next number that every device will actually accept, so a
       // version is never reused or lowered by accident.
       fillVersion("build-version", "build-security", data.next);
+      fillVersion("pkg-version", "pkg-security", data.next, true);
       if (data.next) {
         suggested = data.next;
         var hint = $("build-next");
